@@ -14,10 +14,10 @@ CPPFLAGS += -Icommon
 CFLAGS += -fms-extensions
 LDFLAGS += -rdynamic -fPIE -Wl,--gc-sections
 
-LIBS :=
-LIBS_CPPFLAGS := $(shell pkg-config --cflags-only-I $(LIBS))
-LIBS_CFLAGS := $(shell pkg-config --cflags-only-other $(LIBS))
-LIBS_LDFLAGS := $(shell pkg-config --libs $(LIBS))
+#LIBS :=
+#LIBS_CPPFLAGS := $(shell pkg-config --cflags-only-I $(LIBS))
+#LIBS_CFLAGS := $(shell pkg-config --cflags-only-other $(LIBS))
+#LIBS_LDFLAGS := $(shell pkg-config --libs $(LIBS))
 
 CPPFLAGS += $(LIBS_CPPFLAGS)
 CFLAGS += $(LIBS_CFLAGS)

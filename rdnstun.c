@@ -1,7 +1,6 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
-#include <signal.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -15,7 +14,6 @@
 #include <netinet/ip_icmp.h>
 #include <netinet/ip6.h>
 #include <sys/ioctl.h>
-#include <sys/socket.h>
 
 #include "macro.h"
 #include "tinyglib.h"
@@ -83,22 +81,6 @@ int cwrite (int fd, char *buf, int n){
 }
 
 
-/**************************************************************************
- * read_n: ensures we read exactly n bytes, and puts those into "buf".    *
- *         (unless EOF, of course)                                        *
- **************************************************************************/
-int read_n (int fd, char *buf, int n) {
-  for (int i = 0; i < n; ) {
-    int nread = cread(fd, buf + i, n - i);
-    should (nread > 0) otherwise {
-      return 0;
-    }
-    i += nread;
-  }
-  return n;
-}
-
-
 void *inet_chain_pton (int af, char *arg) {
   size_t struct_size =
     af == AF_INET ? sizeof(struct in_addr) : sizeof(struct in6_addr);
@@ -139,6 +121,11 @@ void *inet_chain_pton (int af, char *arg) {
 
         int step = stop > start ? 1 : -1;
         int n_addr = (stop - start) * step + 1;
+        if (n_addr >= MAXTTL) {
+          token_error = 2;
+          break;
+        }
+
         g_array_set_size(chain, i + n_addr);
         for (int j = 1; j < n_addr; j++) {
           g_array_index(chain, struct in_addr, i + j).s_addr =
@@ -167,12 +154,17 @@ void *inet_chain_pton (int af, char *arg) {
 
         int step = stop > start ? 1 : -1;
         int n_addr = (stop - start) * step + 1;
+        if (n_addr >= MAXTTL) {
+          token_error = 2;
+          break;
+        }
+
         g_array_set_size(chain, i + n_addr);
         for (int j = 1; j < n_addr; j++) {
           memcpy(g_array_index(chain, struct in6_addr, i + j).s6_addr, prefix,
                  sizeof(prefix));
-          *((in_addr_t *) (g_array_index(chain, struct in6_addr, i + j).s6_addr +
-                           prefix_len)) = htonl(start + j * step);
+          *((in_addr_t *) (g_array_index(chain, struct in6_addr, i + j).s6_addr
+                           + prefix_len)) = htonl(start + j * step);
         }
         i += n_addr - 1;
       }
@@ -228,6 +220,7 @@ void usage (const char *progname) {
 "-4 <v4addr_chain>: IPv4 addresses chain\n"
 "-6 <v6addr_chain>: IPv6 addresses chain\n"
 "-t <ttl>: host ttl\n"
+"-D: daemonize\n"
 "-d: outputs debug information while running\n"
 "-h: prints this help text\n", stderr);
 }
@@ -243,11 +236,12 @@ int main (int argc, char *argv[]) {
   struct in_addr *v4_chain = NULL;
   struct in6_addr *v6_chain = NULL;
   u_char host_ttl = 64;
+  bool background = false;
 
   /* Check command line options */
   bool if_name_set = false;
 
-  for (int option; (option = getopt(argc, argv, "-4:6:t:dh")) != -1;) {
+  for (int option; (option = getopt(argc, argv, "-4:6:t:Ddh")) != -1;) {
     switch (option) {
       case 1:
         if unlikely (if_name_set) {
@@ -300,6 +294,9 @@ int main (int argc, char *argv[]) {
         host_ttl = host_ttl_;
         break;
       }
+      case 'D':
+        background = true;
+        break;
       case 'd':
         cur_level = G_LOG_LEVEL_DEBUG;
         break;
@@ -328,6 +325,13 @@ int main (int argc, char *argv[]) {
   struct pollfd fds[] = {
     {.fd = tun_fd, .events = POLLIN},
   };
+
+  if (background) {
+    should (daemon(0, 0) == 0) otherwise {
+      perror("daemon");
+      return EXIT_FAILURE;
+    }
+  }
 
   while (poll(fds, sizeof(fds) / sizeof(fds[0]), -1) > 0) {
     /* data from tun/tap: read it */
@@ -378,9 +382,12 @@ int main (int argc, char *argv[]) {
         if (cur_level >= G_LOG_LEVEL_DEBUG) {
           char s_dst_addr[INET_ADDRSTRLEN];
           char s_src_addr[INET_ADDRSTRLEN];
-          inet_ntop(AF_INET, &pkt_receive->ip_dst, s_dst_addr, sizeof(s_dst_addr));
-          inet_ntop(AF_INET, v4_chain + i_target, s_src_addr, sizeof(s_src_addr));
-          printf("%s %d -> %s %d\n", s_dst_addr, pkt_receive->ip_ttl, s_src_addr, pkt_ttl);
+          inet_ntop(AF_INET, &pkt_receive->ip_dst,
+                    s_dst_addr, sizeof(s_dst_addr));
+          inet_ntop(AF_INET, v4_chain + i_target,
+                    s_src_addr, sizeof(s_src_addr));
+          printf("%s %d -> %s %d\n",
+                 s_dst_addr, pkt_receive->ip_ttl, s_src_addr, pkt_ttl);
         }
         if (host_ttl <= i_target) {
           g_log(RDNSTUN_NAME, G_LOG_LEVEL_INFO,
@@ -408,7 +415,8 @@ int main (int argc, char *argv[]) {
           pkt_send_icmp->icmp_id = pkt_receive_icmp->icmp_id;
           pkt_send_icmp->icmp_seq = pkt_receive_icmp->icmp_seq;
           pkt_send_len = pkt_receive_len - sizeof(struct ip) - ICMP_MINLEN;
-          memcpy(pkt_send_icmp->icmp_data, pkt_receive_icmp->icmp_data, pkt_send_len);
+          memcpy(pkt_send_icmp->icmp_data, pkt_receive_icmp->icmp_data,
+                 pkt_send_len);
           goto no_copy_receive_v4;
         } else {
           pkt_send_icmp->icmp_type = ICMP_UNREACH;
@@ -416,9 +424,9 @@ int main (int argc, char *argv[]) {
         }
         pkt_send_len = pkt_receive_len;
         memcpy(pkt_send_icmp->icmp_data, pkt_receive, pkt_send_len);
+no_copy_receive_v4:
 
         // fill icmp header checksum
-no_copy_receive_v4:
         pkt_send_len += ICMP_MINLEN;
         inet_cksum(&pkt_send_icmp->icmp_cksum, pkt_send_icmp, pkt_send_len);
 
@@ -438,7 +446,8 @@ no_copy_receive_v4:
 
         // prepare send ip header
         memcpy(pkt_send, pkt_receive, sizeof(struct ip6_hdr));
-        memcpy(&pkt_send->ip6_dst, &pkt_receive->ip6_src, sizeof(struct in6_addr));
+        memcpy(&pkt_send->ip6_dst, &pkt_receive->ip6_src,
+               sizeof(struct in6_addr));
 
         // find reply host
         u_char pkt_ttl = pkt_receive->ip6_hlim;
@@ -464,9 +473,12 @@ no_copy_receive_v4:
         if (cur_level >= G_LOG_LEVEL_DEBUG) {
           char s_dst_addr[INET6_ADDRSTRLEN];
           char s_src_addr[INET6_ADDRSTRLEN];
-          inet_ntop(AF_INET6, &pkt_receive->ip6_dst, s_dst_addr, sizeof(s_dst_addr));
-          inet_ntop(AF_INET6, v6_chain + i_target, s_src_addr, sizeof(s_src_addr));
-          printf("%s %d -> %s %d\n", s_dst_addr, pkt_receive->ip6_hlim, s_src_addr, pkt_ttl);
+          inet_ntop(AF_INET6, &pkt_receive->ip6_dst,
+                    s_dst_addr, sizeof(s_dst_addr));
+          inet_ntop(AF_INET6, v6_chain + i_target,
+                    s_src_addr, sizeof(s_src_addr));
+          printf("%s %d -> %s %d\n",
+                 s_dst_addr, pkt_receive->ip6_hlim, s_src_addr, pkt_ttl);
         }
         if (host_ttl <= i_target) {
           g_log(RDNSTUN_NAME, G_LOG_LEVEL_INFO,
@@ -475,7 +487,8 @@ no_copy_receive_v4:
         }
         pkt_send->ip6_hlim = host_ttl - i_target;
         pkt_send->ip6_nxt = IPPROTO_ICMPV6;
-        memcpy(&pkt_send->ip6_src, v6_chain + i_target, sizeof(struct in6_addr));
+        memcpy(&pkt_send->ip6_src, v6_chain + i_target,
+               sizeof(struct in6_addr));
 
         // prepare reply
         const struct icmp6_hdr *pkt_receive_icmp =
@@ -494,7 +507,8 @@ no_copy_receive_v4:
           pkt_send_icmp->icmp6_type = ICMP6_ECHO_REPLY;
           pkt_send_icmp->icmp6_code = 0;
           *pkt_send_icmp->icmp6_data32 = *pkt_receive_icmp->icmp6_data32;
-          pkt_send_len = pkt_receive_len - sizeof(struct ip6_hdr) - sizeof(struct icmp6_hdr);
+          pkt_send_len =
+            pkt_receive_len - sizeof(struct ip6_hdr) - sizeof(struct icmp6_hdr);
           memcpy(pkt_send_icmp + 1, pkt_receive_icmp + 1, pkt_send_len);
           goto no_copy_receive_v6;
         } else {
@@ -503,9 +517,9 @@ no_copy_receive_v4:
         }
         pkt_send_len = pkt_receive_len;
         memcpy(pkt_send_icmp + 1, pkt_receive, pkt_send_len);
+no_copy_receive_v6:
 
         // fill icmp header checksum
-no_copy_receive_v6:
         pkt_send_len += sizeof(struct icmp6_hdr);
         pkt_send_icmp->icmp6_cksum = 0;
         uint32_t sum = inet_cksum_continue(0, &pkt_send->ip6_src, 32);
