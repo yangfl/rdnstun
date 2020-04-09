@@ -26,7 +26,7 @@
  * tun_alloc: allocates or reconnects to a tun/tap device. The caller     *
  *            needs to reserve enough space in *dev.                      *
  **************************************************************************/
-int tun_alloc (char *dev, size_t size) {
+int tun_alloc (char dev[], int flags) {
   int fd = open("/dev/net/tun", O_RDWR);
   should (fd >= 0) otherwise {
     perror("Error when opening /dev/net/tun");
@@ -34,7 +34,7 @@ int tun_alloc (char *dev, size_t size) {
   }
 
   struct ifreq ifr = {
-    .ifr_flags = IFF_TUN | IFF_NO_PI,
+    .ifr_flags = flags | IFF_NO_PI,
   };
   if (dev != NULL) {
     strncpy(ifr.ifr_name, dev, IFNAMSIZ);
@@ -48,10 +48,35 @@ int tun_alloc (char *dev, size_t size) {
   }
 
   if (dev != NULL) {
-    strncpy(dev, ifr.ifr_name, size);
+    strcpy(dev, ifr.ifr_name);
   }
 
   return fd;
+}
+
+
+int ifup (const char ifname[]) {
+  static int fd = -1;
+  if (fd < 0) {
+    fd = socket(AF_INET, SOCK_DGRAM, 0);
+    should (fd >= 0) otherwise {
+      perror("ifup: socket(SOCK_DGRAM)");
+      return fd;
+    }
+  }
+
+  struct ifreq ifr = {
+    .ifr_flags = IFF_UP,
+  };
+  strncpy(ifr.ifr_name, ifname, IFNAMSIZ);
+
+  int err = ioctl(fd, SIOCSIFFLAGS, &ifr);
+  should (err >= 0) otherwise {
+    perror("ifup: ioctl(SIOCSIFFLAGS)");
+    return err;
+  }
+
+  return 0;
 }
 
 
@@ -220,6 +245,7 @@ void usage (const char *progname) {
 "-4 <v4addr_chain>: IPv4 addresses chain\n"
 "-6 <v6addr_chain>: IPv6 addresses chain\n"
 "-t <ttl>: host ttl\n"
+"-m <mtu>: host mtu\n"
 "-D: daemonize\n"
 "-d: outputs debug information while running\n"
 "-h: prints this help text\n", stderr);
@@ -236,12 +262,13 @@ int main (int argc, char *argv[]) {
   struct in_addr *v4_chain = NULL;
   struct in6_addr *v6_chain = NULL;
   u_char host_ttl = 64;
+  u_short host_mtu = 1500;
   bool background = false;
 
   /* Check command line options */
   bool if_name_set = false;
 
-  for (int option; (option = getopt(argc, argv, "-4:6:t:Ddh")) != -1;) {
+  for (int option; (option = getopt(argc, argv, "-4:6:t:m:Ddh")) != -1;) {
     switch (option) {
       case 1:
         if unlikely (if_name_set) {
@@ -294,6 +321,22 @@ int main (int argc, char *argv[]) {
         host_ttl = host_ttl_;
         break;
       }
+      case 'm': {
+        char *optarg_end;
+        long host_mtu_ = strtol(optarg, &optarg_end, 10);
+        should (*optarg_end == '\0') otherwise {
+          g_log(RDNSTUN_NAME, G_LOG_LEVEL_ERROR,
+                "MTU '%s' not a number", optarg);
+          return EXIT_FAILURE;
+        }
+        should (host_mtu_ >= 1200 && host_mtu_ <= IP_MAXPACKET) otherwise {
+          g_log(RDNSTUN_NAME, G_LOG_LEVEL_ERROR,
+                "MTU '%s' out of range", optarg);
+          return EXIT_FAILURE;
+        }
+        host_mtu = host_mtu_;
+        break;
+      }
       case 'D':
         background = true;
         break;
@@ -315,12 +358,16 @@ int main (int argc, char *argv[]) {
   }
 
   /* initialize tun/tap interface */
-  int tun_fd = tun_alloc(if_name, sizeof(if_name));
+  int tun_fd = tun_alloc(if_name, IFF_TUN);
   should (tun_fd >= 0) otherwise {
     return EXIT_FAILURE;
   }
   g_log(RDNSTUN_NAME, G_LOG_LEVEL_INFO,
         "Successfully connected to interface %s", if_name);
+  should (ifup(if_name) >= 0) otherwise {
+    g_log(RDNSTUN_NAME, G_LOG_LEVEL_MESSAGE,
+          "Failed to bring up interface %s", if_name);
+  }
 
   struct pollfd fds[] = {
     {.fd = tun_fd, .events = POLLIN},
@@ -422,7 +469,8 @@ int main (int argc, char *argv[]) {
           pkt_send_icmp->icmp_type = ICMP_UNREACH;
           pkt_send_icmp->icmp_code = ICMP_UNREACH_PORT;
         }
-        pkt_send_len = pkt_receive_len;
+        pkt_send_len =
+          min(pkt_receive_len, host_mtu - sizeof(struct ip) - ICMP_MINLEN);
         memcpy(pkt_send_icmp->icmp_data, pkt_receive, pkt_send_len);
 no_copy_receive_v4:
 
@@ -515,7 +563,8 @@ no_copy_receive_v4:
           pkt_send_icmp->icmp6_type = ICMP6_DST_UNREACH;
           pkt_send_icmp->icmp6_code = ICMP6_DST_UNREACH_NOPORT;
         }
-        pkt_send_len = pkt_receive_len;
+        pkt_send_len = min(pkt_receive_len, host_mtu - sizeof(struct ip6_hdr) -
+                                            sizeof(struct icmp6_hdr));
         memcpy(pkt_send_icmp + 1, pkt_receive, pkt_send_len);
 no_copy_receive_v6:
 

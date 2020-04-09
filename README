@@ -1,3 +1,6 @@
+# optional
+ip tuntap add dev tun-rdns mode tun
+
 sudo ./rdnstun -4 192.168.2.10-192.168.2.1 -6 3000::f-3000::1
 
 sudo ip a a 192.168.2.254/24 dev tun-rdns
