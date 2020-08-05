@@ -26,7 +26,7 @@
  * tun_alloc: allocates or reconnects to a tun/tap device. The caller     *
  *            needs to reserve enough space in *dev.                      *
  **************************************************************************/
-int tun_alloc (char dev[], int flags) {
+int tun_alloc (char dev[IFNAMSIZ], int flags) {
   int fd = open("/dev/net/tun", O_RDWR);
   should (fd >= 0) otherwise {
     perror("Error when opening /dev/net/tun");
@@ -84,7 +84,7 @@ int ifup (const char ifname[]) {
  * cread: read routine that checks for errors and exits if an error is    *
  *        returned.                                                       *
  **************************************************************************/
-int cread (int fd, char *buf, int n){
+int cread (int fd, char buf[], int n){
   int nread = read(fd, buf, n);
   should (nread > 0) otherwise {
     perror("Reading data");
@@ -97,7 +97,7 @@ int cread (int fd, char *buf, int n){
  * cwrite: write routine that checks for errors and exits if an error is  *
  *         returned.                                                      *
  **************************************************************************/
-int cwrite (int fd, char *buf, int n){
+int cwrite (int fd, const char buf[], int n){
   int nwrite = write(fd, buf, n);
   should (nwrite >= 0) otherwise {
     perror("Writing data");
@@ -106,12 +106,12 @@ int cwrite (int fd, char *buf, int n){
 }
 
 
-void *inet_chain_pton (int af, char *arg) {
-  size_t struct_size =
+void *inet_chain_pton (int af, char arg[]) {
+  const size_t struct_size =
     af == AF_INET ? sizeof(struct in_addr) : sizeof(struct in6_addr);
   GArray *chain = g_array_new(false, false, struct_size);
 
-  bool error = 0;
+  bool error = false;
   int i = 0;
   for (char *saved_comma, *token = strtok_r(arg, ",", &saved_comma);
        token != NULL;
@@ -158,6 +158,8 @@ void *inet_chain_pton (int af, char *arg) {
         }
         i += n_addr - 1;
       } else {
+        // compare the leading 96 (128-32) bits
+        // if mismatched, the range must be too large (>= 256)
         const int prefix_len = sizeof(struct in6_addr) - sizeof(struct in_addr);
         if (memcmp(g_array_index(chain, struct in6_addr, i).s6_addr,
                    ((struct in6_addr *) addr_end)->s6_addr,
@@ -200,7 +202,6 @@ void *inet_chain_pton (int af, char *arg) {
         case 1:
           g_log(RDNSTUN_NAME, G_LOG_LEVEL_ERROR,
                 "Address '%s' not in presentation format", token);
-          error = true;
           break;
         case 2:
           g_log(RDNSTUN_NAME, G_LOG_LEVEL_ERROR,
@@ -208,26 +209,31 @@ void *inet_chain_pton (int af, char *arg) {
           break;
       }
       error = true;
-    } else {
-      if (cur_level >= G_LOG_LEVEL_DEBUG) {
-        printf("Parsed address '%s': ", token);
-        for (int j = old_i; j <= i; j++) {
-          char s_addr[INET6_ADDRSTRLEN];
-          inet_ntop(af, chain->data + struct_size * j, s_addr, sizeof(s_addr));
-          if (j != old_i) {
-            printf(", ");
-          }
-          printf("%s", s_addr);
+      break;
+    }
+
+    if (cur_level >= G_LOG_LEVEL_DEBUG) {
+      printf("Parsed address '%s': ", token);
+      for (int j = old_i; j <= i; j++) {
+        char s_addr[INET6_ADDRSTRLEN];
+        inet_ntop(af, chain->data + struct_size * j, s_addr, sizeof(s_addr));
+        if (j != old_i) {
+          printf(", ");
         }
-        printf("\n");
+        printf("%s", s_addr);
       }
+      printf("\n");
     }
   }
 
-  g_array_set_size(chain, chain->len + 1);
-  memset(chain->data + struct_size * (chain->len - 1), 0, struct_size);
-  void *ret = g_array_free(chain, false);
-  return error ? NULL : ret;
+  if (error) {
+    g_array_free(chain, true);
+    return NULL;
+  } else {
+    g_array_set_size(chain, chain->len + 1);
+    memset(chain->data + struct_size * (chain->len - 1), 0, struct_size);
+    return g_array_free(chain, false);
+  }
 }
 
 
@@ -244,8 +250,10 @@ void usage (const char *progname) {
 "\n"
 "  -4 <v4addr_chain> IPv4 addresses chain\n"
 "  -6 <v6addr_chain> IPv6 addresses chain\n"
-"  -t <ttl>          host TTL\n"
-"  -m <mtu>          host MTU\n"
+"  -t <ttl>          TTL for fake hosts\n"
+"                    This parameter is not checked against the chain length.\n"
+"  -m <mtu>          MTU for fake hosts\n"
+"                    Packets large than <mtu> will be silently dropped.\n"
 "  -D                daemonize (run in background)\n"
 "  -d                enable debugging messages\n"
 "  -h                prints this help text\n", stderr);
@@ -265,7 +273,7 @@ int main (int argc, char *argv[]) {
   u_short host_mtu = 1500;
   bool background = false;
 
-  /* Check command line options */
+  /* Parse command line options */
   bool if_name_set = false;
 
   for (int option; (option = getopt(argc, argv, "-4:6:t:m:Ddh")) != -1;) {
@@ -369,16 +377,17 @@ int main (int argc, char *argv[]) {
           "Failed to bring up interface %s", if_name);
   }
 
-  struct pollfd fds[] = {
-    {.fd = tun_fd, .events = POLLIN},
-  };
-
   if (background) {
     should (daemon(0, 0) == 0) otherwise {
       perror("daemon");
       return EXIT_FAILURE;
     }
   }
+
+  /* main loop */
+  struct pollfd fds[] = {
+    {.fd = tun_fd, .events = POLLIN},
+  };
 
   while (poll(fds, sizeof(fds) / sizeof(fds[0]), -1) > 0) {
     /* data from tun/tap: read it */
@@ -450,13 +459,16 @@ int main (int argc, char *argv[]) {
         struct icmp *pkt_send_icmp = (struct icmp *) (pkt_send + 1);
         pkt_send_icmp->icmp_void = 0;
         if (pkt_ttl == 1 && !dst_is_target) {
+          // not us and ttl exceeded
           pkt_send_icmp->icmp_type = ICMP_TIMXCEED;
           pkt_send_icmp->icmp_code = ICMP_TIMXCEED_INTRANS;
         } else if (!dst_is_target) {
+          // not us and ttl not exceeded (at the end of chain), wrong route
           pkt_send_icmp->icmp_type = ICMP_UNREACH;
           pkt_send_icmp->icmp_code = ICMP_UNREACH_HOST;
         } else if (pkt_receive->ip_p == IPPROTO_ICMP &&
                    pkt_receive_icmp->icmp_type == ICMP_ECHO) {
+          // ping
           pkt_send_icmp->icmp_type = ICMP_ECHOREPLY;
           pkt_send_icmp->icmp_code = 0;
           pkt_send_icmp->icmp_id = pkt_receive_icmp->icmp_id;
@@ -464,15 +476,16 @@ int main (int argc, char *argv[]) {
           pkt_send_len = pkt_receive_len - sizeof(struct ip) - ICMP_MINLEN;
           memcpy(pkt_send_icmp->icmp_data, pkt_receive_icmp->icmp_data,
                  pkt_send_len);
-          goto no_copy_receive_v4;
+          goto v4_no_copy_received_pkt;
         } else {
+          // other packet, reply port closed
           pkt_send_icmp->icmp_type = ICMP_UNREACH;
           pkt_send_icmp->icmp_code = ICMP_UNREACH_PORT;
         }
         pkt_send_len =
           min(pkt_receive_len, host_mtu - sizeof(struct ip) - ICMP_MINLEN);
         memcpy(pkt_send_icmp->icmp_data, pkt_receive, pkt_send_len);
-no_copy_receive_v4:
+v4_no_copy_received_pkt:
 
         // fill icmp header checksum
         pkt_send_len += ICMP_MINLEN;
@@ -545,28 +558,32 @@ no_copy_receive_v4:
           (struct icmp6_hdr *) (pkt_send + 1);
         *pkt_send_icmp->icmp6_data32 = 0;
         if (pkt_ttl == 1 && !dst_is_target) {
+          // not us and ttl exceeded
           pkt_send_icmp->icmp6_type = ICMP6_TIME_EXCEEDED;
           pkt_send_icmp->icmp6_code = ICMP6_TIME_EXCEED_TRANSIT;
         } else if (!dst_is_target) {
+          // not us and ttl not exceeded (at the end of chain), wrong route
           pkt_send_icmp->icmp6_type = ICMP6_DST_UNREACH;
           pkt_send_icmp->icmp6_code = ICMP6_DST_UNREACH_ADDR;
         } else if (pkt_receive->ip6_nxt == IPPROTO_ICMPV6 &&
                    pkt_receive_icmp->icmp6_type == ICMP6_ECHO_REQUEST) {
+          // ping
           pkt_send_icmp->icmp6_type = ICMP6_ECHO_REPLY;
           pkt_send_icmp->icmp6_code = 0;
           *pkt_send_icmp->icmp6_data32 = *pkt_receive_icmp->icmp6_data32;
           pkt_send_len =
             pkt_receive_len - sizeof(struct ip6_hdr) - sizeof(struct icmp6_hdr);
           memcpy(pkt_send_icmp + 1, pkt_receive_icmp + 1, pkt_send_len);
-          goto no_copy_receive_v6;
+          goto v6_no_copy_received_pkt;
         } else {
+          // other packet, reply port closed
           pkt_send_icmp->icmp6_type = ICMP6_DST_UNREACH;
           pkt_send_icmp->icmp6_code = ICMP6_DST_UNREACH_NOPORT;
         }
         pkt_send_len = min(pkt_receive_len, host_mtu - sizeof(struct ip6_hdr) -
                                             sizeof(struct icmp6_hdr));
         memcpy(pkt_send_icmp + 1, pkt_receive, pkt_send_len);
-no_copy_receive_v6:
+v6_no_copy_received_pkt:
 
         // fill icmp header checksum
         pkt_send_len += sizeof(struct icmp6_hdr);
@@ -593,9 +610,10 @@ no_copy_receive_v6:
       g_log(RDNSTUN_NAME, G_LOG_LEVEL_DEBUG,
             "Written %d bytes to the interface", n_write);
     }
-
     g_log(RDNSTUN_NAME, G_LOG_LEVEL_DEBUG, " ");
   }
 
+  g_free(v4_chain);
+  g_free(v6_chain);
   return EXIT_SUCCESS;
 }
