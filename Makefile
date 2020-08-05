@@ -2,7 +2,7 @@ DEBUG = 1
 
 CPPFLAGS ?= -fdiagnostics-color=always
 CFLAGS ?= -Wall -fPIC
-LDFLAGS ?=
+LDFLAGS ?= -fPIE -Wl,--gc-sections
 
 ifeq ($(DEBUG), 1)
 	CFLAGS += -g -DDEBUG
@@ -10,21 +10,20 @@ else
 	CFLAGS += -Os
 	LDFLAGS += -s -flto
 endif
-CPPFLAGS += -Icommon
-CFLAGS += -fms-extensions
-LDFLAGS += -rdynamic -fPIE -Wl,--gc-sections
+CPPFLAGS +=
+CFLAGS +=
+LDFLAGS +=
 
-#LIBS :=
-#LIBS_CPPFLAGS := $(shell pkg-config --cflags-only-I $(LIBS))
-#LIBS_CFLAGS := $(shell pkg-config --cflags-only-other $(LIBS))
-#LIBS_LDFLAGS := $(shell pkg-config --libs $(LIBS))
+# LIBS :=
+# LIBS_CPPFLAGS := $(shell pkg-config --cflags-only-I $(LIBS))
+# LIBS_CFLAGS := $(shell pkg-config --cflags-only-other $(LIBS))
+# LIBS_LDFLAGS := $(shell pkg-config --libs $(LIBS))
 
 CPPFLAGS += $(LIBS_CPPFLAGS)
 CFLAGS += $(LIBS_CFLAGS)
 LDFLAGS += $(LIBS_LDFLAGS)
 
-SOURCES := \
-	rdnstun.c tinyglib.c checksum.c
+SOURCES := rdnstun.c tinyglib.c checksum.c
 OBJS := $(SOURCES:.c=.o)
 PREREQUISITES := $(SOURCES:.c=.d)
 

@@ -242,13 +242,13 @@ void usage (const char *progname) {
 "Addresses chain may have the following format:\n"
 "  <addr>[-<addr>],...\n"
 "\n"
-"-4 <v4addr_chain>: IPv4 addresses chain\n"
-"-6 <v6addr_chain>: IPv6 addresses chain\n"
-"-t <ttl>: host ttl\n"
-"-m <mtu>: host mtu\n"
-"-D: daemonize\n"
-"-d: outputs debug information while running\n"
-"-h: prints this help text\n", stderr);
+"  -4 <v4addr_chain> IPv4 addresses chain\n"
+"  -6 <v6addr_chain> IPv6 addresses chain\n"
+"  -t <ttl>          host TTL\n"
+"  -m <mtu>          host MTU\n"
+"  -D                daemonize (run in background)\n"
+"  -d                enable debugging messages\n"
+"  -h                prints this help text\n", stderr);
 }
 
 
