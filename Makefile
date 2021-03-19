@@ -1,8 +1,13 @@
+PROJECT = rdnstun
+
 DEBUG = 1
 
 CPPFLAGS ?= -fdiagnostics-color=always
-CFLAGS ?= -Wall -fPIC
+CFLAGS ?= -fPIC
 LDFLAGS ?= -fPIE -Wl,--gc-sections
+
+CWARN ?= -Wall -Wpointer-arith -Wuninitialized -Wpedantic
+CFLAGS += $(CWARN)
 
 ifeq ($(DEBUG), 1)
 	CFLAGS += -g -DDEBUG
@@ -10,6 +15,7 @@ else
 	CFLAGS += -Os
 	LDFLAGS += -s -flto
 endif
+
 CPPFLAGS +=
 CFLAGS +=
 LDFLAGS +=
@@ -23,11 +29,11 @@ CPPFLAGS += $(LIBS_CPPFLAGS)
 CFLAGS += $(LIBS_CFLAGS)
 LDFLAGS += $(LIBS_LDFLAGS)
 
-SOURCES := rdnstun.c tinyglib.c checksum.c
+SOURCES := rdnstun.c log.c checksum.c
 OBJS := $(SOURCES:.c=.o)
 PREREQUISITES := $(SOURCES:.c=.d)
 
-EXE := rdnstun
+EXE := $(PROJECT)
 
 
 .PHONY: all
@@ -35,7 +41,7 @@ all: $(EXE)
 
 .PHONY: clean
 clean:
-	rm -f $(EXE) $(OBJS) $(PREREQUISITES)
+	$(RM) $(EXE) $(OBJS) $(PREREQUISITES)
 
 -include $(PREREQUISITES)
 

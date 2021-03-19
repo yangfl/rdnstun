@@ -1,6 +1,8 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -16,7 +18,7 @@
 #include <sys/ioctl.h>
 
 #include "macro.h"
-#include "tinyglib.h"
+#include "log.h"
 #include "checksum.h"
 
 #include "rdnstun.h"
@@ -106,16 +108,22 @@ int cwrite (int fd, const char buf[], int n){
 }
 
 
-void *inet_chain_pton (int af, char arg[]) {
+// struct in_addr chain[MAXTTL + 1]
+void *inet_chain_pton (int af, char arg[], void *chain) {
   const size_t struct_size =
     af == AF_INET ? sizeof(struct in_addr) : sizeof(struct in6_addr);
-  GArray *chain = g_array_new(false, false, struct_size);
 
-  bool error = false;
   int i = 0;
   for (char *saved_comma, *token = strtok_r(arg, ",", &saved_comma);
        token != NULL;
        i++, token = strtok_r(NULL, ",", &saved_comma)) {
+    int token_error;
+
+    should (i < MAXTTL) otherwise {
+      token_error = 3;
+      goto fail;
+    }
+
     int old_i = i;
 
     char *next_dash = strchr(token, '-');
@@ -124,99 +132,94 @@ void *inet_chain_pton (int af, char arg[]) {
     }
 
     // parse first component
-    int token_error;
-    g_array_set_size(chain, i + 1);
-    token_error = inet_pton(af, token, chain->data + struct_size * i) <= 0;
+    token_error = inet_pton(af, token, (char *) chain + struct_size * i) <= 0;
+    goto_if_fail (token_error == 0) fail;
 
     // parse second component
-    if (next_dash != NULL && !token_error) do_once {
+    if (next_dash != NULL) {
       *next_dash = '-';
+
       char addr_end[sizeof(struct in6_addr)];
       token_error = inet_pton(af, next_dash + 1, addr_end) <= 0;
-      if (token_error) {
-        break;
-      }
+      goto_if_fail (token_error == 0) fail;
 
       if (af == AF_INET) {
-        in_addr_t start = ntohl(g_array_index(chain, struct in_addr, i).s_addr);
+        in_addr_t start = ntohl(((struct in_addr *) chain)[i].s_addr);
         in_addr_t stop = ntohl(((struct in_addr *) addr_end)->s_addr);
-        if (start == stop) {
-          break;
-        }
+        if (start != stop) {
+          int step = stop > start ? 1 : -1;
+          int n_addr = (stop - start) * step + 1;
+          should (i + n_addr < MAXTTL) otherwise {
+            token_error = 2;
+            goto fail;
+          }
 
-        int step = stop > start ? 1 : -1;
-        int n_addr = (stop - start) * step + 1;
-        if (n_addr >= MAXTTL) {
-          token_error = 2;
-          break;
+          for (int j = 1; j < n_addr; j++) {
+            ((struct in_addr *) chain)[i + j].s_addr = htonl(start + j * step);
+          }
+          i += n_addr - 1;
         }
-
-        g_array_set_size(chain, i + n_addr);
-        for (int j = 1; j < n_addr; j++) {
-          g_array_index(chain, struct in_addr, i + j).s_addr =
-            htonl(start + j * step);
-        }
-        i += n_addr - 1;
       } else {
         // compare the leading 96 (128-32) bits
         // if mismatched, the range must be too large (>= 256)
         const int prefix_len = sizeof(struct in6_addr) - sizeof(struct in_addr);
-        if (memcmp(g_array_index(chain, struct in6_addr, i).s6_addr,
+        if (memcmp(((struct in6_addr *) chain)[i].s6_addr,
                    ((struct in6_addr *) addr_end)->s6_addr,
                    prefix_len) != 0) {
           token_error = 2;
-          break;
+          goto fail;
         }
 
         unsigned char prefix[prefix_len];
-        memcpy(prefix, g_array_index(chain, struct in6_addr, i).s6_addr,
+        memcpy(prefix, ((struct in6_addr *) chain)[i].s6_addr,
                sizeof(prefix));
         in_addr_t start = ntohl(*((in_addr_t *) (
-          g_array_index(chain, struct in6_addr, i).s6_addr + prefix_len)));
+          ((struct in6_addr *) chain)[i].s6_addr + prefix_len)));
         in_addr_t stop = ntohl(*((in_addr_t *) (
           ((struct in6_addr *) addr_end)->s6_addr + prefix_len)));
-        if (start == stop) {
-          break;
-        }
+        if (start != stop) {
+          int step = stop > start ? 1 : -1;
+          int n_addr = (stop - start) * step + 1;
+          should (i + n_addr < MAXTTL) otherwise {
+            token_error = 2;
+            goto fail;
+          }
 
-        int step = stop > start ? 1 : -1;
-        int n_addr = (stop - start) * step + 1;
-        if (n_addr >= MAXTTL) {
-          token_error = 2;
-          break;
+          for (int j = 1; j < n_addr; j++) {
+            memcpy(((struct in6_addr *) chain)[i + j].s6_addr, prefix,
+                   sizeof(prefix));
+            *((in_addr_t *) (((struct in6_addr *) chain)[i + j].s6_addr
+                             + prefix_len)) = htonl(start + j * step);
+          }
+          i += n_addr - 1;
         }
-
-        g_array_set_size(chain, i + n_addr);
-        for (int j = 1; j < n_addr; j++) {
-          memcpy(g_array_index(chain, struct in6_addr, i + j).s6_addr, prefix,
-                 sizeof(prefix));
-          *((in_addr_t *) (g_array_index(chain, struct in6_addr, i + j).s6_addr
-                           + prefix_len)) = htonl(start + j * step);
-        }
-        i += n_addr - 1;
       }
     }
 
-    if (token_error) {
+    if (0) {
+fail:
       switch (token_error) {
         case 1:
-          g_log(RDNSTUN_NAME, G_LOG_LEVEL_ERROR,
-                "Address '%s' not in presentation format", token);
+          logger(RDNSTUN_NAME, LOG_LEVEL_ERROR,
+                 "Address '%s' not in presentation format", token);
           break;
         case 2:
-          g_log(RDNSTUN_NAME, G_LOG_LEVEL_ERROR,
-                "Address range '%s' too large", token);
+          logger(RDNSTUN_NAME, LOG_LEVEL_ERROR,
+                 "Address range '%s' too large", token);
+          break;
+        case 3:
+          logger(RDNSTUN_NAME, LOG_LEVEL_ERROR,
+                 "Address chain already too long at '%s'", token);
           break;
       }
-      error = true;
-      break;
+      return NULL;
     }
 
-    if (cur_level >= G_LOG_LEVEL_DEBUG) {
+    if (cur_level >= LOG_LEVEL_DEBUG) {
       printf("Parsed address '%s': ", token);
       for (int j = old_i; j <= i; j++) {
         char s_addr[INET6_ADDRSTRLEN];
-        inet_ntop(af, chain->data + struct_size * j, s_addr, sizeof(s_addr));
+        inet_ntop(af, (char *) chain + struct_size * j, s_addr, sizeof(s_addr));
         if (j != old_i) {
           printf(", ");
         }
@@ -226,14 +229,8 @@ void *inet_chain_pton (int af, char arg[]) {
     }
   }
 
-  if (error) {
-    g_array_free(chain, true);
-    return NULL;
-  } else {
-    g_array_set_size(chain, chain->len + 1);
-    memset(chain->data + struct_size * (chain->len - 1), 0, struct_size);
-    return g_array_free(chain, false);
-  }
+  memset((char *) chain + struct_size * i, 0, struct_size);
+  return chain;
 }
 
 
@@ -245,11 +242,11 @@ void usage (const char *progname) {
 "Usage: %s [OPTIONS]... [<iface>]\n", progname);
   fputs(
 "\n"
-"Addresses chain may have the following format:\n"
+"Address chain may have the following format:\n"
 "  <addr>[-<addr>],...\n"
 "\n"
-"  -4 <v4addr_chain> IPv4 addresses chain\n"
-"  -6 <v6addr_chain> IPv6 addresses chain\n"
+"  -4 <v4addr_chain> IPv4 address chain\n"
+"  -6 <v6addr_chain> IPv6 address chain\n"
 "  -t <ttl>          TTL for fake hosts\n"
 "                    This parameter is not checked against the chain length.\n"
 "  -m <mtu>          MTU for fake hosts\n"
@@ -260,6 +257,24 @@ void usage (const char *progname) {
 }
 
 
+bool argtol (const char optarg[], long *res, long min, long max,
+             const char argname[], const char log_domain[]) {
+  char *optarg_end;
+  *res = strtol(optarg, &optarg_end, 10);
+  should (*optarg_end == '\0') otherwise {
+    logger(log_domain, LOG_LEVEL_ERROR,
+           "%s '%s' not a number", argname, optarg);
+    return false;
+  }
+  should (min <= *res && *res <= max) otherwise {
+    logger(log_domain, LOG_LEVEL_ERROR,
+           "%s '%s' out of range", argname, optarg);
+    return false;
+  }
+  return true;
+}
+
+
 int main (int argc, char *argv[]) {
   if (argc == 1) {
     usage(argv[0]);
@@ -267,79 +282,66 @@ int main (int argc, char *argv[]) {
   }
 
   char if_name[IFNAMSIZ] = RDNSTUN_IFACE_NAME;
-  struct in_addr *v4_chain = NULL;
-  struct in6_addr *v6_chain = NULL;
+  struct in_addr v4_chain[MAXTTL + 1];
+  struct in6_addr v6_chain[MAXTTL + 1];
   u_char host_ttl = 64;
   u_short host_mtu = 1500;
   bool background = false;
 
   /* Parse command line options */
   bool if_name_set = false;
+  bool v4_chain_set = false;
+  bool v6_chain_set = false;
 
   for (int option; (option = getopt(argc, argv, "-4:6:t:m:Ddh")) != -1;) {
     switch (option) {
       case 1:
         if unlikely (if_name_set) {
-          g_log(RDNSTUN_NAME, G_LOG_LEVEL_ERROR, "Too many options!");
+          logger(RDNSTUN_NAME, LOG_LEVEL_ERROR, "Too many positional options!");
           return EXIT_FAILURE;
         }
         if_name_set = true;
         strncpy(if_name, optarg, sizeof(if_name) - 1);
         if unlikely (strlen(optarg) + 1 > IFNAMSIZ) {
-          g_log(RDNSTUN_NAME, G_LOG_LEVEL_ERROR,
-                "Iface name '%s' too long!", optarg);
+          logger(RDNSTUN_NAME, LOG_LEVEL_ERROR,
+                 "Iface name '%s' too long!", optarg);
           return EXIT_FAILURE;
         }
         break;
       case '4':
-        if unlikely (v4_chain != NULL) {
-          g_log(RDNSTUN_NAME, G_LOG_LEVEL_ERROR,
-                "Duplicated v4 chain '%s'", optarg);
+        if unlikely (v4_chain_set) {
+          logger(RDNSTUN_NAME, LOG_LEVEL_ERROR,
+                 "Duplicated v4 chain '%s'", optarg);
           return EXIT_FAILURE;
         }
-        v4_chain = inet_chain_pton(AF_INET, optarg);
-        should (v4_chain != NULL) otherwise {
+        v4_chain_set = true;
+        should (inet_chain_pton(AF_INET, optarg, v4_chain) != NULL) otherwise {
           return EXIT_FAILURE;
         }
         break;
       case '6':
-        if unlikely (v6_chain != NULL) {
-          g_log(RDNSTUN_NAME, G_LOG_LEVEL_ERROR,
-                "Duplicated v6 chain '%s'", optarg);
+        if unlikely (v6_chain_set) {
+          logger(RDNSTUN_NAME, LOG_LEVEL_ERROR,
+                 "Duplicated v6 chain '%s'", optarg);
           return EXIT_FAILURE;
         }
-        v6_chain = inet_chain_pton(AF_INET6, optarg);
-        should (v6_chain != NULL) otherwise {
+        v6_chain_set = true;
+        should (inet_chain_pton(AF_INET6, optarg, v6_chain) != NULL) otherwise {
           return EXIT_FAILURE;
         }
         break;
       case 't': {
-        char *optarg_end;
-        long host_ttl_ = strtol(optarg, &optarg_end, 10);
-        should (*optarg_end == '\0') otherwise {
-          g_log(RDNSTUN_NAME, G_LOG_LEVEL_ERROR,
-                "TTL '%s' not a number", optarg);
-          return EXIT_FAILURE;
-        }
-        should (host_ttl_ > 0 && host_ttl_ <= MAXTTL) otherwise {
-          g_log(RDNSTUN_NAME, G_LOG_LEVEL_ERROR,
-                "TTL '%s' out of range", optarg);
+        long host_ttl_;
+        if (!argtol(optarg, &host_ttl_, 1, MAXTTL, "TTL", RDNSTUN_NAME)) {
           return EXIT_FAILURE;
         }
         host_ttl = host_ttl_;
         break;
       }
       case 'm': {
-        char *optarg_end;
-        long host_mtu_ = strtol(optarg, &optarg_end, 10);
-        should (*optarg_end == '\0') otherwise {
-          g_log(RDNSTUN_NAME, G_LOG_LEVEL_ERROR,
-                "MTU '%s' not a number", optarg);
-          return EXIT_FAILURE;
-        }
-        should (host_mtu_ >= 1200 && host_mtu_ <= IP_MAXPACKET) otherwise {
-          g_log(RDNSTUN_NAME, G_LOG_LEVEL_ERROR,
-                "MTU '%s' out of range", optarg);
+        long host_mtu_;
+        if (!argtol(optarg, &host_mtu_, 1200, IP_MAXPACKET, "MTU",
+                    RDNSTUN_NAME)) {
           return EXIT_FAILURE;
         }
         host_mtu = host_mtu_;
@@ -349,19 +351,19 @@ int main (int argc, char *argv[]) {
         background = true;
         break;
       case 'd':
-        cur_level = G_LOG_LEVEL_DEBUG;
+        cur_level = LOG_LEVEL_DEBUG;
         break;
       case 'h':
         usage(argv[0]);
         return EXIT_SUCCESS;
       default:
-        g_log(RDNSTUN_NAME, G_LOG_LEVEL_ERROR, "Unknown option '%c'", option);
+        logger(RDNSTUN_NAME, LOG_LEVEL_ERROR, "Unknown option '%c'", option);
         return EXIT_FAILURE;
     }
   }
 
-  if unlikely (v4_chain == NULL && v6_chain == NULL){
-    g_log(RDNSTUN_NAME, G_LOG_LEVEL_ERROR, "Must specify at least one chain!");
+  if unlikely (!v4_chain_set && !v6_chain_set){
+    logger(RDNSTUN_NAME, LOG_LEVEL_ERROR, "Must specify at least one chain!");
     return EXIT_FAILURE;
   }
 
@@ -370,11 +372,11 @@ int main (int argc, char *argv[]) {
   should (tun_fd >= 0) otherwise {
     return EXIT_FAILURE;
   }
-  g_log(RDNSTUN_NAME, G_LOG_LEVEL_INFO,
-        "Successfully connected to interface %s", if_name);
+  logger(RDNSTUN_NAME, LOG_LEVEL_INFO,
+         "Successfully connected to interface %s", if_name);
   should (ifup(if_name) >= 0) otherwise {
-    g_log(RDNSTUN_NAME, G_LOG_LEVEL_MESSAGE,
-          "Failed to bring up interface %s", if_name);
+    logger(RDNSTUN_NAME, LOG_LEVEL_MESSAGE,
+           "Failed to bring up interface %s", if_name);
   }
 
   if (background) {
@@ -396,14 +398,14 @@ int main (int argc, char *argv[]) {
     should (pkt_receive_len > 0) otherwise {
       break;
     }
-    g_log(RDNSTUN_NAME, G_LOG_LEVEL_DEBUG,
-          "Read %d bytes from the interface", pkt_receive_len);
+    logger(RDNSTUN_NAME, LOG_LEVEL_DEBUG,
+           "Read %d bytes from the interface", pkt_receive_len);
 
     char pkt_send_[IP_MAXPACKET];
     size_t pkt_send_len = 0;
     switch (((struct ip *) pkt_receive_)->ip_v) {
       case IPVERSION: {
-        if (v4_chain == NULL) {
+        if (!v4_chain_set) {
           break;
         }
 
@@ -423,6 +425,7 @@ int main (int argc, char *argv[]) {
         bool dst_is_target = false;
         for (i_target = 0;; i_target++, pkt_ttl--) {
           if (v4_chain[i_target].s_addr == INADDR_ANY) {
+            // end of chain
             i_target--;
             pkt_ttl++;
             break;
@@ -435,7 +438,7 @@ int main (int argc, char *argv[]) {
             break;
           }
         }
-        if (cur_level >= G_LOG_LEVEL_DEBUG) {
+        if (cur_level >= LOG_LEVEL_DEBUG) {
           char s_dst_addr[INET_ADDRSTRLEN];
           char s_src_addr[INET_ADDRSTRLEN];
           inet_ntop(AF_INET, &pkt_receive->ip_dst,
@@ -446,8 +449,8 @@ int main (int argc, char *argv[]) {
                  s_dst_addr, pkt_receive->ip_ttl, s_src_addr, pkt_ttl);
         }
         if (host_ttl <= i_target) {
-          g_log(RDNSTUN_NAME, G_LOG_LEVEL_INFO,
-                "Host TTL too small %d\n", host_ttl);
+          logger(RDNSTUN_NAME, LOG_LEVEL_INFO,
+                 "Host TTL too small %d\n", host_ttl);
           break;
         }
         pkt_send->ip_ttl = host_ttl - i_target;
@@ -498,7 +501,7 @@ v4_no_copy_received_pkt:
         break;
       }
       case 6: {
-        if (v6_chain == NULL) {
+        if (!v6_chain_set) {
           break;
         }
 
@@ -519,6 +522,7 @@ v4_no_copy_received_pkt:
         bool dst_is_target = false;
         for (i_target = 0;; i_target++, pkt_ttl--) {
           if (IN6_IS_ADDR_UNSPECIFIED(v6_chain + i_target)) {
+            // end of chain
             i_target--;
             pkt_ttl++;
             break;
@@ -531,7 +535,7 @@ v4_no_copy_received_pkt:
             break;
           }
         }
-        if (cur_level >= G_LOG_LEVEL_DEBUG) {
+        if (cur_level >= LOG_LEVEL_DEBUG) {
           char s_dst_addr[INET6_ADDRSTRLEN];
           char s_src_addr[INET6_ADDRSTRLEN];
           inet_ntop(AF_INET6, &pkt_receive->ip6_dst,
@@ -542,8 +546,8 @@ v4_no_copy_received_pkt:
                  s_dst_addr, pkt_receive->ip6_hlim, s_src_addr, pkt_ttl);
         }
         if (host_ttl <= i_target) {
-          g_log(RDNSTUN_NAME, G_LOG_LEVEL_INFO,
-                "Host TTL too small %d\n", host_ttl);
+          logger(RDNSTUN_NAME, LOG_LEVEL_INFO,
+                 "Host TTL too small %d\n", host_ttl);
           break;
         }
         pkt_send->ip6_hlim = host_ttl - i_target;
@@ -600,20 +604,18 @@ v6_no_copy_received_pkt:
         break;
       }
       default:
-        g_log(RDNSTUN_NAME, G_LOG_LEVEL_DEBUG,
-              "Unknown IP version %d", ((struct ip *) pkt_receive_)->ip_v);
+        logger(RDNSTUN_NAME, LOG_LEVEL_DEBUG,
+               "Unknown IP version %d", ((struct ip *) pkt_receive_)->ip_v);
     }
 
     /* write it into the tun/tap interface */
     if (pkt_send_len > 0) {
       int n_write = cwrite(tun_fd, pkt_send_, pkt_send_len);
-      g_log(RDNSTUN_NAME, G_LOG_LEVEL_DEBUG,
-            "Written %d bytes to the interface", n_write);
+      logger(RDNSTUN_NAME, LOG_LEVEL_DEBUG,
+             "Written %d bytes to the interface", n_write);
     }
-    g_log(RDNSTUN_NAME, G_LOG_LEVEL_DEBUG, " ");
+    logger(RDNSTUN_NAME, LOG_LEVEL_DEBUG, " ");
   }
 
-  g_free(v4_chain);
-  g_free(v6_chain);
   return EXIT_SUCCESS;
 }
