@@ -1,6 +1,5 @@
-#include <errno.h>
-#include <fcntl.h>
 #include <poll.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -9,7 +8,6 @@
 #include <unistd.h>
 
 #include <arpa/inet.h>
-#include <linux/if.h>
 #include <linux/if_tun.h>
 #include <netinet/icmp6.h>
 #include <netinet/ip.h>
@@ -20,96 +18,284 @@
 #include "macro.h"
 #include "log.h"
 #include "checksum.h"
+#include "iface.h"
 
 #include "rdnstun.h"
 
 
-/**************************************************************************
- * tun_alloc: allocates or reconnects to a tun/tap device. The caller     *
- *            needs to reserve enough space in *dev.                      *
- **************************************************************************/
-int tun_alloc (char dev[IFNAMSIZ], int flags) {
-  int fd = open("/dev/net/tun", O_RDWR);
-  should (fd >= 0) otherwise {
-    perror("Error when opening /dev/net/tun");
-    return fd;
-  }
+bool rdnstun_shutdown = false;
 
-  struct ifreq ifr = {
-    .ifr_flags = flags | IFF_NO_PI,
-  };
-  if (dev != NULL) {
-    strncpy(ifr.ifr_name, dev, IFNAMSIZ);
-  }
 
-  int err = ioctl(fd, TUNSETIFF, &ifr);
-  should (err >= 0) otherwise {
-    perror("tun_alloc: ioctl(TUNSETIFF)");
-    close(fd);
-    return err;
-  }
-
-  if (dev != NULL) {
-    strcpy(dev, ifr.ifr_name);
-  }
-
-  return fd;
+static void shutdown_rdnstun () {  // not void
+  logger(RDNSTUN_NAME, LOG_LEVEL_INFO, "Shutting down " RDNSTUN_NAME);
+  rdnstun_shutdown = true;
 }
 
 
-int ifup (const char ifname[]) {
-  static int fd = -1;
-  if (fd < 0) {
-    fd = socket(AF_INET, SOCK_DGRAM, 0);
-    should (fd >= 0) otherwise {
-      perror("ifup: socket(SOCK_DGRAM)");
-      return fd;
-    }
-  }
-
-  struct ifreq ifr = {
-    .ifr_flags = IFF_UP,
-  };
-  strncpy(ifr.ifr_name, ifname, IFNAMSIZ);
-
-  int err = ioctl(fd, SIOCSIFFLAGS, &ifr);
-  should (err >= 0) otherwise {
-    perror("ifup: ioctl(SIOCSIFFLAGS)");
-    return err;
-  }
-
-  return 0;
-}
-
-
-/**************************************************************************
- * cread: read routine that checks for errors and exits if an error is    *
- *        returned.                                                       *
- **************************************************************************/
-int cread (int fd, char buf[], int n){
+static int cread (int fd, char buf[], int n){
   int nread = read(fd, buf, n);
   should (nread > 0) otherwise {
-    perror("Reading data");
+    perror("read");
   }
   return nread;
 }
 
 
-/**************************************************************************
- * cwrite: write routine that checks for errors and exits if an error is  *
- *         returned.                                                      *
- **************************************************************************/
-int cwrite (int fd, const char buf[], int n){
+static int cwrite (int fd, const char buf[], int n){
   int nwrite = write(fd, buf, n);
   should (nwrite >= 0) otherwise {
-    perror("Writing data");
+    perror("write");
   }
   return nwrite;
 }
 
 
+static void rdnstun (
+    int tunfd, const struct in_addr *v4_chain, const struct in6_addr *v6_chain,
+    u_char host_ttl, u_short host_mtu, volatile bool *shutdown) {
+  struct pollfd fds[] = {
+    {.fd = tunfd, .events = POLLIN},
+  };
+
+  for (int pollres; !*shutdown;) {
+    pollres = poll(fds, arraysize(fds), RDNSTUN_SLEEP_TIME * 1000);
+    should (pollres >= 0) otherwise {
+      perror("poll");
+      continue;
+    }
+    if (pollres == 0) {
+      continue;
+    }
+
+    /* data from tun/tap: read it */
+    char pkt_receive_[IP_MAXPACKET];
+    int pkt_receive_len = cread(tunfd, pkt_receive_, sizeof(pkt_receive_));
+    should (pkt_receive_len > 0) otherwise {
+      break;
+    }
+    logger(RDNSTUN_NAME, LOG_LEVEL_DEBUG,
+           "Read %d bytes from the interface", pkt_receive_len);
+
+    char pkt_send_[IP_MAXPACKET];
+    size_t pkt_send_len = 0;
+    switch (((struct ip *) pkt_receive_)->ip_v) {
+      case IPVERSION: {
+        if (v4_chain == NULL) {
+          break;
+        }
+
+        const struct ip *pkt_receive = (struct ip *) pkt_receive_;
+        struct ip *pkt_send = (struct ip *) pkt_send_;
+
+        // prepare send ip header
+        memcpy(pkt_send, pkt_receive, sizeof(struct ip));
+        pkt_send->ip_dst.s_addr = pkt_receive->ip_src.s_addr;
+
+        // find reply host
+        u_char pkt_ttl = pkt_receive->ip_ttl;
+        if (pkt_ttl <= 0) {
+          break;
+        }
+        int i_target;
+        bool dst_is_target = false;
+        for (i_target = 0;; i_target++, pkt_ttl--) {
+          if (v4_chain[i_target].s_addr == INADDR_ANY) {
+            // end of chain
+            i_target--;
+            pkt_ttl++;
+            break;
+          }
+          if (v4_chain[i_target].s_addr == pkt_receive->ip_dst.s_addr) {
+            dst_is_target = true;
+            break;
+          }
+          if (pkt_ttl == 1) {
+            break;
+          }
+        }
+        if (effective_log_level >= LOG_LEVEL_DEBUG) {
+          char s_dst_addr[INET_ADDRSTRLEN];
+          char s_src_addr[INET_ADDRSTRLEN];
+          inet_ntop(AF_INET, &pkt_receive->ip_dst,
+                    s_dst_addr, sizeof(s_dst_addr));
+          inet_ntop(AF_INET, v4_chain + i_target,
+                    s_src_addr, sizeof(s_src_addr));
+          printf("%s %d -> %s %d\n",
+                 s_dst_addr, pkt_receive->ip_ttl, s_src_addr, pkt_ttl);
+        }
+        if (host_ttl <= i_target) {
+          logger(RDNSTUN_NAME, LOG_LEVEL_INFO,
+                 "Host TTL too small %d\n", host_ttl);
+          break;
+        }
+        pkt_send->ip_ttl = host_ttl - i_target;
+        pkt_send->ip_p = IPPROTO_ICMP;
+        pkt_send->ip_src.s_addr = v4_chain[i_target].s_addr;
+
+        // prepare reply
+        const struct icmp *pkt_receive_icmp = (struct icmp *) (pkt_receive + 1);
+        struct icmp *pkt_send_icmp = (struct icmp *) (pkt_send + 1);
+        pkt_send_icmp->icmp_void = 0;
+        if (pkt_ttl == 1 && !dst_is_target) {
+          // not us and ttl exceeded
+          pkt_send_icmp->icmp_type = ICMP_TIMXCEED;
+          pkt_send_icmp->icmp_code = ICMP_TIMXCEED_INTRANS;
+        } else if (!dst_is_target) {
+          // not us and ttl not exceeded (at the end of chain), wrong route
+          pkt_send_icmp->icmp_type = ICMP_UNREACH;
+          pkt_send_icmp->icmp_code = ICMP_UNREACH_HOST;
+        } else if (pkt_receive->ip_p == IPPROTO_ICMP &&
+                   pkt_receive_icmp->icmp_type == ICMP_ECHO) {
+          // ping
+          pkt_send_icmp->icmp_type = ICMP_ECHOREPLY;
+          pkt_send_icmp->icmp_code = 0;
+          pkt_send_icmp->icmp_id = pkt_receive_icmp->icmp_id;
+          pkt_send_icmp->icmp_seq = pkt_receive_icmp->icmp_seq;
+          pkt_send_len = pkt_receive_len - sizeof(struct ip) - ICMP_MINLEN;
+          memcpy(pkt_send_icmp->icmp_data, pkt_receive_icmp->icmp_data,
+                 pkt_send_len);
+          goto v4_no_copy_received_pkt;
+        } else {
+          // other packet, reply port closed
+          pkt_send_icmp->icmp_type = ICMP_UNREACH;
+          pkt_send_icmp->icmp_code = ICMP_UNREACH_PORT;
+        }
+        pkt_send_len =
+          min(pkt_receive_len, host_mtu - sizeof(struct ip) - ICMP_MINLEN);
+        memcpy(pkt_send_icmp->icmp_data, pkt_receive, pkt_send_len);
+v4_no_copy_received_pkt:
+
+        // fill icmp header checksum
+        pkt_send_len += ICMP_MINLEN;
+        inet_cksum(&pkt_send_icmp->icmp_cksum, pkt_send_icmp, pkt_send_len);
+
+        // fill ip header checksum
+        pkt_send_len += sizeof(struct ip);
+        pkt_send->ip_len = htons(pkt_send_len);
+        inet_cksum(&pkt_send->ip_sum, pkt_send, pkt_send_len);
+        break;
+      }
+      case 6: {
+        if (v6_chain == NULL) {
+          break;
+        }
+
+        const struct ip6_hdr *pkt_receive = (struct ip6_hdr *) pkt_receive_;
+        struct ip6_hdr *pkt_send = (struct ip6_hdr *) pkt_send_;
+
+        // prepare send ip header
+        memcpy(pkt_send, pkt_receive, sizeof(struct ip6_hdr));
+        memcpy(&pkt_send->ip6_dst, &pkt_receive->ip6_src,
+               sizeof(struct in6_addr));
+
+        // find reply host
+        u_char pkt_ttl = pkt_receive->ip6_hlim;
+        if (pkt_ttl <= 0) {
+          break;
+        }
+        int i_target;
+        bool dst_is_target = false;
+        for (i_target = 0;; i_target++, pkt_ttl--) {
+          if (IN6_IS_ADDR_UNSPECIFIED(v6_chain + i_target)) {
+            // end of chain
+            i_target--;
+            pkt_ttl++;
+            break;
+          }
+          if (IN6_ARE_ADDR_EQUAL(v6_chain + i_target, &pkt_receive->ip6_dst)) {
+            dst_is_target = true;
+            break;
+          }
+          if (pkt_ttl == 1) {
+            break;
+          }
+        }
+        if (effective_log_level >= LOG_LEVEL_DEBUG) {
+          char s_dst_addr[INET6_ADDRSTRLEN];
+          char s_src_addr[INET6_ADDRSTRLEN];
+          inet_ntop(AF_INET6, &pkt_receive->ip6_dst,
+                    s_dst_addr, sizeof(s_dst_addr));
+          inet_ntop(AF_INET6, v6_chain + i_target,
+                    s_src_addr, sizeof(s_src_addr));
+          printf("%s %d -> %s %d\n",
+                 s_dst_addr, pkt_receive->ip6_hlim, s_src_addr, pkt_ttl);
+        }
+        if (host_ttl <= i_target) {
+          logger(RDNSTUN_NAME, LOG_LEVEL_INFO,
+                 "Host TTL too small %d\n", host_ttl);
+          break;
+        }
+        pkt_send->ip6_hlim = host_ttl - i_target;
+        pkt_send->ip6_nxt = IPPROTO_ICMPV6;
+        memcpy(&pkt_send->ip6_src, v6_chain + i_target,
+               sizeof(struct in6_addr));
+
+        // prepare reply
+        const struct icmp6_hdr *pkt_receive_icmp =
+          (struct icmp6_hdr *) (pkt_receive + 1);
+        struct icmp6_hdr *pkt_send_icmp =
+          (struct icmp6_hdr *) (pkt_send + 1);
+        *pkt_send_icmp->icmp6_data32 = 0;
+        if (pkt_ttl == 1 && !dst_is_target) {
+          // not us and ttl exceeded
+          pkt_send_icmp->icmp6_type = ICMP6_TIME_EXCEEDED;
+          pkt_send_icmp->icmp6_code = ICMP6_TIME_EXCEED_TRANSIT;
+        } else if (!dst_is_target) {
+          // not us and ttl not exceeded (at the end of chain), wrong route
+          pkt_send_icmp->icmp6_type = ICMP6_DST_UNREACH;
+          pkt_send_icmp->icmp6_code = ICMP6_DST_UNREACH_ADDR;
+        } else if (pkt_receive->ip6_nxt == IPPROTO_ICMPV6 &&
+                   pkt_receive_icmp->icmp6_type == ICMP6_ECHO_REQUEST) {
+          // ping
+          pkt_send_icmp->icmp6_type = ICMP6_ECHO_REPLY;
+          pkt_send_icmp->icmp6_code = 0;
+          *pkt_send_icmp->icmp6_data32 = *pkt_receive_icmp->icmp6_data32;
+          pkt_send_len =
+            pkt_receive_len - sizeof(struct ip6_hdr) - sizeof(struct icmp6_hdr);
+          memcpy(pkt_send_icmp + 1, pkt_receive_icmp + 1, pkt_send_len);
+          goto v6_no_copy_received_pkt;
+        } else {
+          // other packet, reply port closed
+          pkt_send_icmp->icmp6_type = ICMP6_DST_UNREACH;
+          pkt_send_icmp->icmp6_code = ICMP6_DST_UNREACH_NOPORT;
+        }
+        pkt_send_len = min(pkt_receive_len, host_mtu - sizeof(struct ip6_hdr) -
+                                            sizeof(struct icmp6_hdr));
+        memcpy(pkt_send_icmp + 1, pkt_receive, pkt_send_len);
+v6_no_copy_received_pkt:
+
+        // fill icmp header checksum
+        pkt_send_len += sizeof(struct icmp6_hdr);
+        pkt_send_icmp->icmp6_cksum = 0;
+        uint32_t sum = inet_cksum_continue(0, &pkt_send->ip6_src, 32);
+        sum += htonl(pkt_send_len);
+        sum += htonl(pkt_send->ip6_nxt);
+        sum = inet_cksum_continue(sum, pkt_send_icmp, pkt_send_len);
+        pkt_send_icmp->icmp6_cksum = inet_cksum_finish(sum);
+
+        // fill ip header checksum
+        pkt_send->ip6_plen = htons(pkt_send_len);
+        pkt_send_len += sizeof(struct ip6_hdr);
+        break;
+      }
+      default:
+        logger(RDNSTUN_NAME, LOG_LEVEL_DEBUG,
+               "Unknown IP version %d", ((struct ip *) pkt_receive_)->ip_v);
+    }
+
+    /* write it into the tun/tap interface */
+    if (pkt_send_len > 0) {
+      int n_write = cwrite(tunfd, pkt_send_, pkt_send_len);
+      logger(RDNSTUN_NAME, LOG_LEVEL_DEBUG,
+             "Written %d bytes to the interface", n_write);
+    }
+    logger(RDNSTUN_NAME, LOG_LEVEL_DEBUG, " ");
+  }
+}
+
+
 // struct in_addr chain[MAXTTL + 1]
-void *inet_chain_pton (int af, char arg[], void *chain) {
+static void *inet_chain_pton (int af, char arg[], void *chain) {
   const size_t struct_size =
     af == AF_INET ? sizeof(struct in_addr) : sizeof(struct in6_addr);
 
@@ -215,7 +401,7 @@ fail:
       return NULL;
     }
 
-    if (cur_level >= LOG_LEVEL_DEBUG) {
+    if (effective_log_level >= LOG_LEVEL_DEBUG) {
       printf("Parsed address '%s': ", token);
       for (int j = old_i; j <= i; j++) {
         char s_addr[INET6_ADDRSTRLEN];
@@ -234,10 +420,28 @@ fail:
 }
 
 
+static bool argtol (const char optarg[], long *res, long min, long max,
+             const char argname[], const char log_domain[]) {
+  char *optarg_end;
+  *res = strtol(optarg, &optarg_end, 10);
+  should (*optarg_end == '\0') otherwise {
+    logger(log_domain, LOG_LEVEL_ERROR,
+           "%s '%s' not a number", argname, optarg);
+    return false;
+  }
+  should (min <= *res && *res <= max) otherwise {
+    logger(log_domain, LOG_LEVEL_ERROR,
+           "%s '%s' out of range", argname, optarg);
+    return false;
+  }
+  return true;
+}
+
+
 /**************************************************************************
  * usage: prints usage and exits.                                         *
  **************************************************************************/
-void usage (const char *progname) {
+static void usage (const char *progname) {
   fprintf(stderr,
 "Usage: %s [OPTIONS]... [<iface>]\n", progname);
   fputs(
@@ -254,24 +458,6 @@ void usage (const char *progname) {
 "  -D                daemonize (run in background)\n"
 "  -d                enable debugging messages\n"
 "  -h                prints this help text\n", stderr);
-}
-
-
-bool argtol (const char optarg[], long *res, long min, long max,
-             const char argname[], const char log_domain[]) {
-  char *optarg_end;
-  *res = strtol(optarg, &optarg_end, 10);
-  should (*optarg_end == '\0') otherwise {
-    logger(log_domain, LOG_LEVEL_ERROR,
-           "%s '%s' not a number", argname, optarg);
-    return false;
-  }
-  should (min <= *res && *res <= max) otherwise {
-    logger(log_domain, LOG_LEVEL_ERROR,
-           "%s '%s' out of range", argname, optarg);
-    return false;
-  }
-  return true;
 }
 
 
@@ -351,7 +537,7 @@ int main (int argc, char *argv[]) {
         background = true;
         break;
       case 'd':
-        cur_level = LOG_LEVEL_DEBUG;
+        effective_log_level = LOG_LEVEL_DEBUG;
         break;
       case 'h':
         usage(argv[0]);
@@ -368,8 +554,8 @@ int main (int argc, char *argv[]) {
   }
 
   /* initialize tun/tap interface */
-  int tun_fd = tun_alloc(if_name, IFF_TUN);
-  should (tun_fd >= 0) otherwise {
+  int tunfd = tun_alloc(if_name, IFF_TUN);
+  should (tunfd >= 0) otherwise {
     return EXIT_FAILURE;
   }
   logger(RDNSTUN_NAME, LOG_LEVEL_INFO,
@@ -379,6 +565,7 @@ int main (int argc, char *argv[]) {
            "Failed to bring up interface %s", if_name);
   }
 
+  /* main loop */
   if (background) {
     should (daemon(0, 0) == 0) otherwise {
       perror("daemon");
@@ -386,236 +573,11 @@ int main (int argc, char *argv[]) {
     }
   }
 
-  /* main loop */
-  struct pollfd fds[] = {
-    {.fd = tun_fd, .events = POLLIN},
-  };
+  signal(SIGINT, shutdown_rdnstun);
+  rdnstun(tunfd, v4_chain_set ? v4_chain : NULL, v6_chain_set ? v6_chain : NULL,
+          host_ttl, host_mtu, &rdnstun_shutdown);
 
-  while (poll(fds, sizeof(fds) / sizeof(fds[0]), -1) > 0) {
-    /* data from tun/tap: read it */
-    char pkt_receive_[IP_MAXPACKET];
-    int pkt_receive_len = cread(tun_fd, pkt_receive_, sizeof(pkt_receive_));
-    should (pkt_receive_len > 0) otherwise {
-      break;
-    }
-    logger(RDNSTUN_NAME, LOG_LEVEL_DEBUG,
-           "Read %d bytes from the interface", pkt_receive_len);
-
-    char pkt_send_[IP_MAXPACKET];
-    size_t pkt_send_len = 0;
-    switch (((struct ip *) pkt_receive_)->ip_v) {
-      case IPVERSION: {
-        if (!v4_chain_set) {
-          break;
-        }
-
-        const struct ip *pkt_receive = (struct ip *) pkt_receive_;
-        struct ip *pkt_send = (struct ip *) pkt_send_;
-
-        // prepare send ip header
-        memcpy(pkt_send, pkt_receive, sizeof(struct ip));
-        pkt_send->ip_dst.s_addr = pkt_receive->ip_src.s_addr;
-
-        // find reply host
-        u_char pkt_ttl = pkt_receive->ip_ttl;
-        if (pkt_ttl <= 0) {
-          break;
-        }
-        int i_target;
-        bool dst_is_target = false;
-        for (i_target = 0;; i_target++, pkt_ttl--) {
-          if (v4_chain[i_target].s_addr == INADDR_ANY) {
-            // end of chain
-            i_target--;
-            pkt_ttl++;
-            break;
-          }
-          if (v4_chain[i_target].s_addr == pkt_receive->ip_dst.s_addr) {
-            dst_is_target = true;
-            break;
-          }
-          if (pkt_ttl == 1) {
-            break;
-          }
-        }
-        if (cur_level >= LOG_LEVEL_DEBUG) {
-          char s_dst_addr[INET_ADDRSTRLEN];
-          char s_src_addr[INET_ADDRSTRLEN];
-          inet_ntop(AF_INET, &pkt_receive->ip_dst,
-                    s_dst_addr, sizeof(s_dst_addr));
-          inet_ntop(AF_INET, v4_chain + i_target,
-                    s_src_addr, sizeof(s_src_addr));
-          printf("%s %d -> %s %d\n",
-                 s_dst_addr, pkt_receive->ip_ttl, s_src_addr, pkt_ttl);
-        }
-        if (host_ttl <= i_target) {
-          logger(RDNSTUN_NAME, LOG_LEVEL_INFO,
-                 "Host TTL too small %d\n", host_ttl);
-          break;
-        }
-        pkt_send->ip_ttl = host_ttl - i_target;
-        pkt_send->ip_p = IPPROTO_ICMP;
-        pkt_send->ip_src.s_addr = v4_chain[i_target].s_addr;
-
-        // prepare reply
-        const struct icmp *pkt_receive_icmp = (struct icmp *) (pkt_receive + 1);
-        struct icmp *pkt_send_icmp = (struct icmp *) (pkt_send + 1);
-        pkt_send_icmp->icmp_void = 0;
-        if (pkt_ttl == 1 && !dst_is_target) {
-          // not us and ttl exceeded
-          pkt_send_icmp->icmp_type = ICMP_TIMXCEED;
-          pkt_send_icmp->icmp_code = ICMP_TIMXCEED_INTRANS;
-        } else if (!dst_is_target) {
-          // not us and ttl not exceeded (at the end of chain), wrong route
-          pkt_send_icmp->icmp_type = ICMP_UNREACH;
-          pkt_send_icmp->icmp_code = ICMP_UNREACH_HOST;
-        } else if (pkt_receive->ip_p == IPPROTO_ICMP &&
-                   pkt_receive_icmp->icmp_type == ICMP_ECHO) {
-          // ping
-          pkt_send_icmp->icmp_type = ICMP_ECHOREPLY;
-          pkt_send_icmp->icmp_code = 0;
-          pkt_send_icmp->icmp_id = pkt_receive_icmp->icmp_id;
-          pkt_send_icmp->icmp_seq = pkt_receive_icmp->icmp_seq;
-          pkt_send_len = pkt_receive_len - sizeof(struct ip) - ICMP_MINLEN;
-          memcpy(pkt_send_icmp->icmp_data, pkt_receive_icmp->icmp_data,
-                 pkt_send_len);
-          goto v4_no_copy_received_pkt;
-        } else {
-          // other packet, reply port closed
-          pkt_send_icmp->icmp_type = ICMP_UNREACH;
-          pkt_send_icmp->icmp_code = ICMP_UNREACH_PORT;
-        }
-        pkt_send_len =
-          min(pkt_receive_len, host_mtu - sizeof(struct ip) - ICMP_MINLEN);
-        memcpy(pkt_send_icmp->icmp_data, pkt_receive, pkt_send_len);
-v4_no_copy_received_pkt:
-
-        // fill icmp header checksum
-        pkt_send_len += ICMP_MINLEN;
-        inet_cksum(&pkt_send_icmp->icmp_cksum, pkt_send_icmp, pkt_send_len);
-
-        // fill ip header checksum
-        pkt_send_len += sizeof(struct ip);
-        pkt_send->ip_len = htons(pkt_send_len);
-        inet_cksum(&pkt_send->ip_sum, pkt_send, pkt_send_len);
-        break;
-      }
-      case 6: {
-        if (!v6_chain_set) {
-          break;
-        }
-
-        const struct ip6_hdr *pkt_receive = (struct ip6_hdr *) pkt_receive_;
-        struct ip6_hdr *pkt_send = (struct ip6_hdr *) pkt_send_;
-
-        // prepare send ip header
-        memcpy(pkt_send, pkt_receive, sizeof(struct ip6_hdr));
-        memcpy(&pkt_send->ip6_dst, &pkt_receive->ip6_src,
-               sizeof(struct in6_addr));
-
-        // find reply host
-        u_char pkt_ttl = pkt_receive->ip6_hlim;
-        if (pkt_ttl <= 0) {
-          break;
-        }
-        int i_target;
-        bool dst_is_target = false;
-        for (i_target = 0;; i_target++, pkt_ttl--) {
-          if (IN6_IS_ADDR_UNSPECIFIED(v6_chain + i_target)) {
-            // end of chain
-            i_target--;
-            pkt_ttl++;
-            break;
-          }
-          if (IN6_ARE_ADDR_EQUAL(v6_chain + i_target, &pkt_receive->ip6_dst)) {
-            dst_is_target = true;
-            break;
-          }
-          if (pkt_ttl == 1) {
-            break;
-          }
-        }
-        if (cur_level >= LOG_LEVEL_DEBUG) {
-          char s_dst_addr[INET6_ADDRSTRLEN];
-          char s_src_addr[INET6_ADDRSTRLEN];
-          inet_ntop(AF_INET6, &pkt_receive->ip6_dst,
-                    s_dst_addr, sizeof(s_dst_addr));
-          inet_ntop(AF_INET6, v6_chain + i_target,
-                    s_src_addr, sizeof(s_src_addr));
-          printf("%s %d -> %s %d\n",
-                 s_dst_addr, pkt_receive->ip6_hlim, s_src_addr, pkt_ttl);
-        }
-        if (host_ttl <= i_target) {
-          logger(RDNSTUN_NAME, LOG_LEVEL_INFO,
-                 "Host TTL too small %d\n", host_ttl);
-          break;
-        }
-        pkt_send->ip6_hlim = host_ttl - i_target;
-        pkt_send->ip6_nxt = IPPROTO_ICMPV6;
-        memcpy(&pkt_send->ip6_src, v6_chain + i_target,
-               sizeof(struct in6_addr));
-
-        // prepare reply
-        const struct icmp6_hdr *pkt_receive_icmp =
-          (struct icmp6_hdr *) (pkt_receive + 1);
-        struct icmp6_hdr *pkt_send_icmp =
-          (struct icmp6_hdr *) (pkt_send + 1);
-        *pkt_send_icmp->icmp6_data32 = 0;
-        if (pkt_ttl == 1 && !dst_is_target) {
-          // not us and ttl exceeded
-          pkt_send_icmp->icmp6_type = ICMP6_TIME_EXCEEDED;
-          pkt_send_icmp->icmp6_code = ICMP6_TIME_EXCEED_TRANSIT;
-        } else if (!dst_is_target) {
-          // not us and ttl not exceeded (at the end of chain), wrong route
-          pkt_send_icmp->icmp6_type = ICMP6_DST_UNREACH;
-          pkt_send_icmp->icmp6_code = ICMP6_DST_UNREACH_ADDR;
-        } else if (pkt_receive->ip6_nxt == IPPROTO_ICMPV6 &&
-                   pkt_receive_icmp->icmp6_type == ICMP6_ECHO_REQUEST) {
-          // ping
-          pkt_send_icmp->icmp6_type = ICMP6_ECHO_REPLY;
-          pkt_send_icmp->icmp6_code = 0;
-          *pkt_send_icmp->icmp6_data32 = *pkt_receive_icmp->icmp6_data32;
-          pkt_send_len =
-            pkt_receive_len - sizeof(struct ip6_hdr) - sizeof(struct icmp6_hdr);
-          memcpy(pkt_send_icmp + 1, pkt_receive_icmp + 1, pkt_send_len);
-          goto v6_no_copy_received_pkt;
-        } else {
-          // other packet, reply port closed
-          pkt_send_icmp->icmp6_type = ICMP6_DST_UNREACH;
-          pkt_send_icmp->icmp6_code = ICMP6_DST_UNREACH_NOPORT;
-        }
-        pkt_send_len = min(pkt_receive_len, host_mtu - sizeof(struct ip6_hdr) -
-                                            sizeof(struct icmp6_hdr));
-        memcpy(pkt_send_icmp + 1, pkt_receive, pkt_send_len);
-v6_no_copy_received_pkt:
-
-        // fill icmp header checksum
-        pkt_send_len += sizeof(struct icmp6_hdr);
-        pkt_send_icmp->icmp6_cksum = 0;
-        uint32_t sum = inet_cksum_continue(0, &pkt_send->ip6_src, 32);
-        sum += htonl(pkt_send_len);
-        sum += htonl(pkt_send->ip6_nxt);
-        sum = inet_cksum_continue(sum, pkt_send_icmp, pkt_send_len);
-        pkt_send_icmp->icmp6_cksum = inet_cksum_finish(sum);
-
-        // fill ip header checksum
-        pkt_send->ip6_plen = htons(pkt_send_len);
-        pkt_send_len += sizeof(struct ip6_hdr);
-        break;
-      }
-      default:
-        logger(RDNSTUN_NAME, LOG_LEVEL_DEBUG,
-               "Unknown IP version %d", ((struct ip *) pkt_receive_)->ip_v);
-    }
-
-    /* write it into the tun/tap interface */
-    if (pkt_send_len > 0) {
-      int n_write = cwrite(tun_fd, pkt_send_, pkt_send_len);
-      logger(RDNSTUN_NAME, LOG_LEVEL_DEBUG,
-             "Written %d bytes to the interface", n_write);
-    }
-    logger(RDNSTUN_NAME, LOG_LEVEL_DEBUG, " ");
-  }
+  close(tunfd);
 
   return EXIT_SUCCESS;
 }

@@ -17,11 +17,13 @@ typedef enum {
 
   LOG_LEVEL_MASK              = ~(LOG_FLAG_RECURSION | LOG_FLAG_FATAL)
 } LogLevelFlags;
-extern LogLevelFlags cur_level;
+extern LogLevelFlags effective_log_level;
 
 
+__attribute__((nonnull, access(read_only, 1), access(read_only, 3),
+               format(printf, 3, 4)))
 void logger (const char log_domain[], LogLevelFlags log_level,
-             const char format[], ...) __attribute__((format(printf, 3, 4)));
+             const char format[], ...);
 
 
 #endif /* LOG_H */

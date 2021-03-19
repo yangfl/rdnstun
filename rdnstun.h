@@ -4,6 +4,7 @@
 
 #define RDNSTUN_NAME "rdnstun"
 #define RDNSTUN_IFACE_NAME "tun-rdns"
+#define RDNSTUN_SLEEP_TIME 3
 
 
 #endif /* RDNSTUN_H */

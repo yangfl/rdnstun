@@ -29,7 +29,7 @@ CPPFLAGS += $(LIBS_CPPFLAGS)
 CFLAGS += $(LIBS_CFLAGS)
 LDFLAGS += $(LIBS_LDFLAGS)
 
-SOURCES := rdnstun.c log.c checksum.c
+SOURCES := rdnstun.c log.c checksum.c iface.c
 OBJS := $(SOURCES:.c=.o)
 PREREQUISITES := $(SOURCES:.c=.d)
 

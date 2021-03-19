@@ -14,5 +14,7 @@
 #define max(a, b) ((a) > (b) ? (a) : (b))
 #define min(a, b) ((a) < (b) ? (a) : (b))
 
+#define arraysize(a) (sizeof(a) / sizeof(a[0]))
+
 
 #endif /* MACRO_H */

@@ -32,15 +32,9 @@ uint16_t inet_cksum_finish (uint32_t sum) {
 
 
 uint16_t inet_cksum (void *cksum, const void *buf, size_t count) {
-  uint16_t *ip_cksum = cksum;
-  if (ip_cksum != NULL) {
-    *ip_cksum = 0;
-  }
-
   uint16_t sum = inet_cksum_finish(inet_cksum_continue(0, buf, count));
-
-  if (ip_cksum != NULL) {
-    *ip_cksum = sum;
+  if (cksum != NULL) {
+    *(uint16_t *) cksum = sum;
   }
   return sum;
 }
