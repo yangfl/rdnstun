@@ -23,7 +23,7 @@
 #include "rdnstun.h"
 
 
-bool rdnstun_shutdown = false;
+volatile bool rdnstun_shutdown = false;
 
 
 static void shutdown_rdnstun () {  // not void
@@ -386,16 +386,15 @@ static void *inet_chain_pton (int af, char arg[], void *chain) {
 fail:
       switch (token_error) {
         case 1:
-          logger(RDNSTUN_NAME, LOG_LEVEL_ERROR,
-                 "Address '%s' not in presentation format", token);
+          fprintf(stderr, "error: address '%s' not in presentation format",
+                  token);
           break;
         case 2:
-          logger(RDNSTUN_NAME, LOG_LEVEL_ERROR,
-                 "Address range '%s' too large", token);
+          fprintf(stderr, "error: address range '%s' too large", token);
           break;
         case 3:
-          logger(RDNSTUN_NAME, LOG_LEVEL_ERROR,
-                 "Address chain already too long at '%s'", token);
+          fprintf(stderr, "error: address chain already too long at '%s'",
+                  token);
           break;
       }
       return NULL;
@@ -421,17 +420,15 @@ fail:
 
 
 static bool argtol (const char optarg[], long *res, long min, long max,
-             const char argname[], const char log_domain[]) {
+                    const char argname[]) {
   char *optarg_end;
   *res = strtol(optarg, &optarg_end, 10);
   should (*optarg_end == '\0') otherwise {
-    logger(log_domain, LOG_LEVEL_ERROR,
-           "%s '%s' not a number", argname, optarg);
+    fprintf(stderr, "error: %s '%s' not a number", argname, optarg);
     return false;
   }
   should (min <= *res && *res <= max) otherwise {
-    logger(log_domain, LOG_LEVEL_ERROR,
-           "%s '%s' out of range", argname, optarg);
+    fprintf(stderr, "error: %s '%s' out of range", argname, optarg);
     return false;
   }
   return true;
@@ -483,21 +480,19 @@ int main (int argc, char *argv[]) {
     switch (option) {
       case 1:
         if unlikely (if_name_set) {
-          logger(RDNSTUN_NAME, LOG_LEVEL_ERROR, "Too many positional options!");
+          fprintf(stderr, "error: too many positional options");
           return EXIT_FAILURE;
         }
         if_name_set = true;
         strncpy(if_name, optarg, sizeof(if_name) - 1);
         if unlikely (strlen(optarg) + 1 > IFNAMSIZ) {
-          logger(RDNSTUN_NAME, LOG_LEVEL_ERROR,
-                 "Iface name '%s' too long!", optarg);
+          fprintf(stderr, "error: iface name '%s' too long", optarg);
           return EXIT_FAILURE;
         }
         break;
       case '4':
         if unlikely (v4_chain_set) {
-          logger(RDNSTUN_NAME, LOG_LEVEL_ERROR,
-                 "Duplicated v4 chain '%s'", optarg);
+          fprintf(stderr, "error: duplicated v4 chain '%s'", optarg);
           return EXIT_FAILURE;
         }
         v4_chain_set = true;
@@ -507,8 +502,7 @@ int main (int argc, char *argv[]) {
         break;
       case '6':
         if unlikely (v6_chain_set) {
-          logger(RDNSTUN_NAME, LOG_LEVEL_ERROR,
-                 "Duplicated v6 chain '%s'", optarg);
+          fprintf(stderr, "error: duplicated v6 chain '%s'", optarg);
           return EXIT_FAILURE;
         }
         v6_chain_set = true;
@@ -518,7 +512,7 @@ int main (int argc, char *argv[]) {
         break;
       case 't': {
         long host_ttl_;
-        if (!argtol(optarg, &host_ttl_, 1, MAXTTL, "TTL", RDNSTUN_NAME)) {
+        if (!argtol(optarg, &host_ttl_, 1, MAXTTL, "TTL")) {
           return EXIT_FAILURE;
         }
         host_ttl = host_ttl_;
@@ -526,8 +520,7 @@ int main (int argc, char *argv[]) {
       }
       case 'm': {
         long host_mtu_;
-        if (!argtol(optarg, &host_mtu_, 1200, IP_MAXPACKET, "MTU",
-                    RDNSTUN_NAME)) {
+        if (!argtol(optarg, &host_mtu_, 1200, IP_MAXPACKET, "MTU")) {
           return EXIT_FAILURE;
         }
         host_mtu = host_mtu_;
@@ -543,13 +536,13 @@ int main (int argc, char *argv[]) {
         usage(argv[0]);
         return EXIT_SUCCESS;
       default:
-        logger(RDNSTUN_NAME, LOG_LEVEL_ERROR, "Unknown option '%c'", option);
+        fprintf(stderr, "error: unknown option '%c'", option);
         return EXIT_FAILURE;
     }
   }
 
   if unlikely (!v4_chain_set && !v6_chain_set){
-    logger(RDNSTUN_NAME, LOG_LEVEL_ERROR, "Must specify at least one chain!");
+    fprintf(stderr, "error: must specify at least one chain");
     return EXIT_FAILURE;
   }
 
