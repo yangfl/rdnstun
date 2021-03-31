@@ -1,22 +1,35 @@
 PROJECT = rdnstun
 
-DEBUG = 1
+DEBUG ?= 1
+RELEASE ?= 0
 
 CPPFLAGS ?= -fdiagnostics-color=always
-CFLAGS ?= -fPIC
-LDFLAGS ?= -fPIE -Wl,--gc-sections
+ifeq ($(RELEASE), 0)
+	CFLAGS ?= -Os -fPIC
+else
+	CFLAGS ?= -O2 -fPIC
+endif
+LDFLAGS ?= -pie
 
-CWARN ?= -Wall -Wpointer-arith -Wuninitialized -Wpedantic
+CPPFLAGS += -D_FORTIFY_SOURCE=2
+CFLAGS += -std=c2x -fstack-protector-strong
+LDFLAGS += -Wl,--gc-sections -Wl,-z,relro
+
+CWARN ?= -Wall -Wextra -Wpedantic -Werror=format-security \
+	-Wno-cast-function-type -Wno-missing-field-initializers
+ifeq ($(DEBUG), 1)
+	CWARN += -fanalyzer
+endif
 CFLAGS += $(CWARN)
 
 ifeq ($(DEBUG), 1)
-	CFLAGS += -g -DDEBUG
-else
-	CFLAGS += -Os
-	LDFLAGS += -s -flto
+	CFLAGS += -g
+endif
+ifeq ($(RELEASE), 0)
+	CFLAGS += -DDEBUG
 endif
 
-CPPFLAGS +=
+CPPFLAGS += -D_DEFAULT_SOURCE
 CFLAGS +=
 LDFLAGS +=
 
@@ -29,7 +42,7 @@ CPPFLAGS += $(LIBS_CPPFLAGS)
 CFLAGS += $(LIBS_CFLAGS)
 LDFLAGS += $(LIBS_LDFLAGS)
 
-SOURCES := rdnstun.c log.c checksum.c iface.c
+SOURCES := rdnstun.c chain.c checksum.c host.c iface.c log.c
 OBJS := $(SOURCES:.c=.o)
 PREREQUISITES := $(SOURCES:.c=.d)
 

@@ -12,7 +12,7 @@
 #include "iface.h"
 
 
-int tun_alloc (char ifname[IFNAMSIZ], int flags) {
+int tun_alloc (char ifname[IF_NAMESIZE], int flags) {
   int fd = open("/dev/net/tun", O_RDWR);
   should (fd >= 0) otherwise {
     perror("Error when opening /dev/net/tun");
@@ -23,7 +23,7 @@ int tun_alloc (char ifname[IFNAMSIZ], int flags) {
     .ifr_flags = flags | IFF_NO_PI,
   };
   if (ifname != NULL) {
-    memcpy(ifr.ifr_name, ifname, IFNAMSIZ);
+    memcpy(ifr.ifr_name, ifname, IF_NAMESIZE);
   }
 
   int err = ioctl(fd, TUNSETIFF, &ifr);
@@ -34,13 +34,13 @@ int tun_alloc (char ifname[IFNAMSIZ], int flags) {
   }
 
   if (ifname != NULL) {
-    memcpy(ifname, ifr.ifr_name, IFNAMSIZ);
+    memcpy(ifname, ifr.ifr_name, IF_NAMESIZE);
   }
   return fd;
 }
 
 
-int ifup (const char ifname[IFNAMSIZ]) {
+int ifup (const char ifname[IF_NAMESIZE]) {
   int fd = socket(AF_INET, SOCK_DGRAM, 0);
   should (fd >= 0) otherwise {
     perror("ifup: socket(SOCK_DGRAM)");
@@ -50,7 +50,7 @@ int ifup (const char ifname[IFNAMSIZ]) {
   struct ifreq ifr = {
     .ifr_flags = IFF_UP,
   };
-  memcpy(ifr.ifr_name, ifname, IFNAMSIZ);
+  memcpy(ifr.ifr_name, ifname, IF_NAMESIZE);
 
   int err = ioctl(fd, SIOCSIFFLAGS, &ifr);
   close(fd);

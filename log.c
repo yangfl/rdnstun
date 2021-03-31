@@ -12,6 +12,7 @@ LogLevelFlags effective_log_level = LOG_LEVEL_MESSAGE;
 void logger (const char log_domain[], LogLevelFlags log_level,
              const char format[], ...) {
   if (log_level <= effective_log_level) {
+    fputs(log_domain, stderr);
     va_list ap;
     va_start(ap, format);
     if unlikely (log_level == LOG_LEVEL_ERROR ||

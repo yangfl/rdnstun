@@ -1,4 +1,6 @@
 rdnstun
 *.d
 *.o
+*.so*
 tmp/
+.gdb_history
