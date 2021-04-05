@@ -11,6 +11,7 @@
 #include "macro.h"
 #include "checksum.h"
 #include "log.h"
+#include "rdnstun.h"
 #include "host.h"
 
 
@@ -32,8 +33,9 @@ int BaseFakeHost_init (
 
 
 int FakeHost_reply (
-    const struct FakeHost * restrict self, const struct iphdr * restrict receive,
-    unsigned short receive_len, unsigned char ttl,
+    const struct FakeHost * restrict self,
+    const struct iphdr * restrict receive, unsigned short receive_len,
+    unsigned char ttl,
     struct iphdr * restrict send, unsigned short * restrict send_len) {
   return_if_fail (receive->ttl > ttl) 1;
 
@@ -48,13 +50,15 @@ int FakeHost_reply (
   send->saddr = self->addr.s_addr;
   send->daddr = receive->saddr;
 
-  if (effective_log_level >= LOG_LEVEL_DEBUG) {
-    char s_dst_addr[INET_ADDRSTRLEN];
+  if (should_log(LOG_LEVEL_DEBUG)) {
     char s_src_addr[INET_ADDRSTRLEN];
-    inet_ntop(AF_INET, &receive->daddr, s_dst_addr, sizeof(s_dst_addr));
-    inet_ntop(AF_INET, &self->addr, s_src_addr, sizeof(s_src_addr));
-    printf("%s %d -> %s %d\n", s_dst_addr, receive_ttl,
-           s_src_addr, send->ttl);
+    char s_orig_dst_addr[INET_ADDRSTRLEN];
+    char s_dst_addr[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &send->saddr, s_src_addr, sizeof(s_src_addr));
+    inet_ntop(AF_INET, &receive->daddr, s_orig_dst_addr, sizeof(s_orig_dst_addr));
+    inet_ntop(AF_INET, &send->daddr, s_dst_addr, sizeof(s_dst_addr));
+    LOGGER(RDNSTUN_NAME, LOG_LEVEL_DEBUG, "%s %d -> %s %d",
+           s_dst_addr, receive_ttl, s_src_addr, send->ttl);
   }
 
   // prepare reply
@@ -110,8 +114,8 @@ int FakeHost_init (
 
 int FakeHost6_reply (
     const struct FakeHost6 * restrict self,
-    const struct ip6_hdr * restrict receive,
-    unsigned short receive_len, unsigned char ttl,
+    const struct ip6_hdr * restrict receive, unsigned short receive_len,
+    unsigned char ttl,
     struct ip6_hdr * restrict send, unsigned short * restrict send_len) {
   return_if_fail (receive->ip6_hlim > ttl) 1;
 
@@ -126,13 +130,13 @@ int FakeHost6_reply (
   memcpy(&send->ip6_src, &self->addr, sizeof(struct in6_addr));
   memcpy(&send->ip6_dst, &receive->ip6_src, sizeof(struct in6_addr));
 
-  if (effective_log_level >= LOG_LEVEL_DEBUG) {
-    char s_dst_addr[INET6_ADDRSTRLEN];
+  if (should_log(LOG_LEVEL_DEBUG)) {
     char s_src_addr[INET6_ADDRSTRLEN];
-    inet_ntop(AF_INET6, &receive->ip6_dst, s_dst_addr, sizeof(s_dst_addr));
-    inet_ntop(AF_INET6, &self->addr, s_src_addr, sizeof(s_src_addr));
-    printf("%s %d -> %s %d\n", s_dst_addr, receive_ttl,
-           s_src_addr, send->ip6_hlim);
+    char s_dst_addr[INET6_ADDRSTRLEN];
+    inet_ntop(AF_INET6, &send->ip6_src, s_src_addr, sizeof(s_src_addr));
+    inet_ntop(AF_INET6, &send->ip6_dst, s_dst_addr, sizeof(s_dst_addr));
+    LOGGER(RDNSTUN_NAME, LOG_LEVEL_DEBUG, "%s %d -> %s %d",
+           s_dst_addr, receive_ttl, s_src_addr, send->ip6_hlim);
   }
 
   // prepare reply

@@ -106,9 +106,9 @@ static int argtoi (const char s[], int *res, long min, long max) {
 
 int HostChain_init (
     struct HostChain * restrict self, const char * restrict s, bool v6) {
-  const unsigned int struct_size =
+  register const unsigned int struct_size =
     v6 ? sizeof(struct FakeHost6) : sizeof(struct FakeHost);
-  const int af = v6 ? AF_INET6 : AF_INET;
+  register const int af = v6 ? AF_INET6 : AF_INET;
 
   int ret;
   self->_buf = malloc(struct_size * MAXTTL);
@@ -126,8 +126,7 @@ int HostChain_init (
     if (stracmp(token, "ttl=") == 0) {
       token += strlen("ttl=");
       int new_ttl;
-      test_goto (argtoi(
-        token, &new_ttl, i + 1, ttl == 0 ? MAXTTL : ttl) == 0, 5) fail;
+      test_goto (argtoi(token, &new_ttl, i + 1, MAXTTL) == 0, 5) fail;
       ttl = new_ttl;
     } else if (stracmp(token, "mtu=") == 0) {
       token += strlen("mtu=");
@@ -183,7 +182,7 @@ int HostChain_init (
 
         if likely (memcmp(
             &host->addr, addr_end,
-            v6 ? sizeof(struct in_addr) : sizeof(struct in6_addr)) != 0) {
+            v6 ? sizeof(struct in6_addr) : sizeof(struct in_addr)) != 0) {
           register const int prefix_len =
             sizeof(struct in6_addr) - sizeof(struct in_addr);
           unsigned char prefix[prefix_len];
@@ -230,7 +229,10 @@ int HostChain_init (
         }
       }
 
-      if (effective_log_level >= LOG_LEVEL_DEBUG) {
+      if (should_log(LOG_LEVEL_DEBUG)) {
+        if (next_dash != NULL) {
+          *next_dash = '-';
+        }
         printf("Parsed address '%s': ", token);
         for (unsigned int j = old_i; j < i; j++) {
           char s_addr[INET6_ADDRSTRLEN];
