@@ -270,9 +270,13 @@ void *HostChainArray_find (
     if (HostChain_in(self, addr)) {
       bool found = false;  // bug -Wuninitialized
       void *host = HostChain_find(self + i, addr, ttl, &found, index);
-      continue_if_fail (host != NULL);
+      if unlikely (host == NULL) {
+        continue;
+      }
       ret = host;
-      break_if (found);
+      if (found) {
+        break;
+      }
     }
   }
   return ret;

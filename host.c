@@ -52,13 +52,19 @@ int FakeHost_reply (
 
   if (should_log(LOG_LEVEL_DEBUG)) {
     char s_src_addr[INET_ADDRSTRLEN];
-    char s_orig_dst_addr[INET_ADDRSTRLEN];
     char s_dst_addr[INET_ADDRSTRLEN];
-    inet_ntop(AF_INET, &send->saddr, s_src_addr, sizeof(s_src_addr));
-    inet_ntop(AF_INET, &receive->daddr, s_orig_dst_addr, sizeof(s_orig_dst_addr));
-    inet_ntop(AF_INET, &send->daddr, s_dst_addr, sizeof(s_dst_addr));
-    LOGGER(RDNSTUN_NAME, LOG_LEVEL_DEBUG, "%s %d -> %s %d",
-           s_dst_addr, receive_ttl, s_src_addr, send->ttl);
+    inet_ntop(AF_INET, &receive->saddr, s_src_addr, sizeof(s_src_addr));
+    inet_ntop(AF_INET, &receive->daddr, s_dst_addr, sizeof(s_dst_addr));
+    if (dst_is_target) {
+      LOGGER(RDNSTUN_NAME, LOG_LEVEL_DEBUG, "%s %d -> %s %d (%d)",
+             s_src_addr, receive->ttl, s_dst_addr, receive_ttl, send->ttl);
+    } else {
+      char s_self_addr[INET_ADDRSTRLEN];
+      inet_ntop(AF_INET, &send->saddr, s_self_addr, sizeof(s_self_addr));
+      LOGGER(RDNSTUN_NAME, LOG_LEVEL_DEBUG, "%s %d -> %s %d (%s %d)",
+             s_src_addr, receive->ttl, s_dst_addr, receive_ttl,
+             s_self_addr, send->ttl);
+    }
   }
 
   // prepare reply
@@ -133,10 +139,19 @@ int FakeHost6_reply (
   if (should_log(LOG_LEVEL_DEBUG)) {
     char s_src_addr[INET6_ADDRSTRLEN];
     char s_dst_addr[INET6_ADDRSTRLEN];
-    inet_ntop(AF_INET6, &send->ip6_src, s_src_addr, sizeof(s_src_addr));
-    inet_ntop(AF_INET6, &send->ip6_dst, s_dst_addr, sizeof(s_dst_addr));
-    LOGGER(RDNSTUN_NAME, LOG_LEVEL_DEBUG, "%s %d -> %s %d",
-           s_dst_addr, receive_ttl, s_src_addr, send->ip6_hlim);
+    inet_ntop(AF_INET6, &receive->ip6_src, s_src_addr, sizeof(s_src_addr));
+    inet_ntop(AF_INET6, &receive->ip6_dst, s_dst_addr, sizeof(s_dst_addr));
+    if (dst_is_target) {
+      LOGGER(RDNSTUN_NAME, LOG_LEVEL_DEBUG, "%s %d -> %s %d (%d)",
+             s_src_addr, receive->ip6_hlim, s_dst_addr, receive_ttl,
+             send->ip6_hlim);
+    } else {
+      char s_self_addr[INET6_ADDRSTRLEN];
+      inet_ntop(AF_INET6, &send->ip6_src, s_self_addr, sizeof(s_self_addr));
+      LOGGER(RDNSTUN_NAME, LOG_LEVEL_DEBUG, "%s %d -> %s %d (%s %d)",
+             s_src_addr, receive->ip6_hlim, s_dst_addr, receive_ttl,
+             s_self_addr, send->ip6_hlim);
+    }
   }
 
   // prepare reply

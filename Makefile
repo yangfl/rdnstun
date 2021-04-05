@@ -1,7 +1,11 @@
 PROJECT = rdnstun
 
 DEBUG ?= 1
-RELEASE ?= 0
+ifeq ($(DEBUG), 1)
+	RELEASE ?= 0
+else
+	RELEASE ?= 1
+endif
 
 CPPFLAGS ?= -fdiagnostics-color=always
 ifeq ($(RELEASE), 0)
@@ -11,9 +15,16 @@ else
 endif
 LDFLAGS ?= -pie
 
+ifeq ($(DEBUG), 1)
+	CFLAGS += -g
+endif
+ifeq ($(RELEASE), 0)
+	CPPFLAGS += -DDEBUG
+endif
+
 CPPFLAGS += -D_FORTIFY_SOURCE=2
-CFLAGS += -std=c2x -fstack-protector-strong
-LDFLAGS += -Wl,--gc-sections -Wl,-z,relro
+CFLAGS += -fstack-protector-strong
+LDFLAGS += -Wl,-z,relro
 
 CWARN ?= -Wall -Wextra -Wpedantic -Werror=format-security \
 	-Wno-cast-function-type -Wno-missing-field-initializers
@@ -22,29 +33,24 @@ ifeq ($(DEBUG), 1)
 endif
 CFLAGS += $(CWARN)
 
-ifeq ($(DEBUG), 1)
-	CFLAGS += -g
-endif
-ifeq ($(RELEASE), 0)
-	CFLAGS += -DDEBUG
-endif
-
 CPPFLAGS += -D_DEFAULT_SOURCE
-CFLAGS +=
-LDFLAGS +=
+CFLAGS += -std=c2x
+LDFLAGS += -Wl,--gc-sections
 
 # LIBS :=
-# LIBS_CPPFLAGS := $(shell pkg-config --cflags-only-I $(LIBS))
-# LIBS_CFLAGS := $(shell pkg-config --cflags-only-other $(LIBS))
-# LIBS_LDFLAGS := $(shell pkg-config --libs $(LIBS))
+# PKG_CONFIG ?= pkg-config
+# LIBS_CPPFLAGS := $(shell $(PKG_CONFIG) --cflags-only-I $(LIBS))
+# LIBS_CFLAGS := $(shell $(PKG_CONFIG) --cflags-only-other $(LIBS))
+# LIBS_LDFLAGS := $(shell $(PKG_CONFIG) --libs $(LIBS))
 
-CPPFLAGS += $(LIBS_CPPFLAGS)
-CFLAGS += $(LIBS_CFLAGS)
-LDFLAGS += $(LIBS_LDFLAGS)
+# CPPFLAGS += $(LIBS_CPPFLAGS)
+# CFLAGS += $(LIBS_CFLAGS)
+# LDFLAGS += $(LIBS_LDFLAGS)
 
 SOURCES := rdnstun.c chain.c checksum.c host.c iface.c log.c
 OBJS := $(SOURCES:.c=.o)
 PREREQUISITES := $(SOURCES:.c=.d)
+THIS_MAKEFILE_LIST := $(MAKEFILE_LIST)
 
 EXE := $(PROJECT)
 
@@ -56,10 +62,10 @@ all: $(EXE)
 clean:
 	$(RM) $(EXE) $(OBJS) $(PREREQUISITES)
 
--include $(PREREQUISITES)
-
 %.d: %.c
-	$(CC) -M $(CPPFLAGS) $< | sed 's,.*\.o *:,$(<:.c=.o) $@: Makefile ,' > $@
+	$(CC) -M $(CPPFLAGS) $< | sed 's,.*\.o *:,$(<:.c=.o) $@: $(THIS_MAKEFILE_LIST),' > $@
+
+-include $(PREREQUISITES)
 
 $(EXE): $(OBJS)
 	$(CC) -o $@ $^ $(LDFLAGS)

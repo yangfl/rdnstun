@@ -27,17 +27,21 @@ struct HostChain {
 };
 
 
-__attribute__((nonnull, pure, access(read_only, 1), access(read_only, 2)))
+__attribute__((nonnull, pure, warn_unused_result,
+               access(read_only, 1), access(read_only, 2)))
 int HostChain_compare (
-  const struct HostChain * restrict self, const struct HostChain * restrict other);
-__attribute__((nonnull, pure, access(read_only, 1), access(read_only, 2)))
+  const struct HostChain * restrict self,
+  const struct HostChain * restrict other);
+__attribute__((nonnull, pure, warn_unused_result,
+               access(read_only, 1), access(read_only, 2)))
 bool HostChain_in (
   const struct HostChain * restrict self, const void * restrict addr);
-__attribute__((nonnull, pure, access(read_only, 1), access(read_only, 2), access(write_only, 4), access(write_only, 5)))
+__attribute__((nonnull, warn_unused_result, access(read_only, 1), access(read_only, 2),
+               access(write_only, 4), access(write_only, 5)))
 void *HostChain_find (
   const struct HostChain * restrict self, const void * restrict addr,
   unsigned char ttl, bool *found, unsigned char *index);
-__attribute__((const))
+__attribute__((const, warn_unused_result))
 const char *HostChain_strerror (int errnum);
 __attribute__((nonnull))
 void HostChain_destroy (struct HostChain * restrict self);
@@ -48,21 +52,24 @@ int HostChain_init (
 
 /***/
 
-__attribute__((nonnull, pure, access(read_only, 1), access(read_only, 2), access(write_only, 4)))
+__attribute__((nonnull, warn_unused_result, access(read_only, 1),
+               access(read_only, 2), access(write_only, 4)))
 void *HostChainArray_find (
   const struct HostChain * restrict self, const void * restrict addr,
   unsigned char ttl, unsigned char *index);
-__attribute__((nonnull, access(read_only, 1), access(read_only, 2), access(write_only, 4), access(write_only, 5)))
+__attribute__((nonnull, access(read_only, 1), access(read_only, 2),
+               access(write_only, 4), access(write_only, 5)))
 int HostChain4Array_reply (
   const struct HostChain * restrict self,
   const struct iphdr * restrict receive, unsigned short receive_len,
   struct iphdr * restrict send, unsigned short * restrict send_len);
-__attribute__((nonnull, access(read_only, 1), access(read_only, 2), access(write_only, 4), access(write_only, 5)))
+__attribute__((nonnull, access(read_only, 1), access(read_only, 2),
+               access(write_only, 4), access(write_only, 5)))
 int HostChain6Array_reply (
   const struct HostChain * restrict self,
   const struct ip6_hdr * restrict receive, unsigned short receive_len,
   struct ip6_hdr * restrict send, unsigned short * restrict send_len);
-__attribute__((nonnull, pure, access(read_only, 1)))
+__attribute__((nonnull, pure, warn_unused_result, access(read_only, 1)))
 size_t HostChainArray_nitem (const struct HostChain * restrict self);
 __attribute__((nonnull))
 void HostChainArray_sort (struct HostChain * restrict self);

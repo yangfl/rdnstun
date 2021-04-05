@@ -12,7 +12,7 @@
 #include "iface.h"
 
 
-int tun_alloc (char ifname[IF_NAMESIZE], int flags) {
+int tun_alloc (char ifname[static IF_NAMESIZE], int flags) {
   int fd = open("/dev/net/tun", O_RDWR);
   should (fd >= 0) otherwise {
     perror("Error when opening /dev/net/tun");

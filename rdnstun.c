@@ -54,6 +54,9 @@ static void rdnstun (
   for (int pollres; !*shutdown;) {
     pollres = poll(fds, arraysize(fds), RDNSTUN_SLEEP_TIME * 1000);
     should (pollres >= 0) otherwise {
+      if (*shutdown) {
+        break;
+      }
       perror("poll");
       continue;
     }
@@ -95,7 +98,7 @@ static void rdnstun (
         if (0) {
 undefined_ipver:
           LOGGER(RDNSTUN_NAME, LOG_LEVEL_DEBUG,
-                 "Received IPv%d packet but no v%d chains defined",
+                 "Received IPv%d packet but no IPv%d chains defined",
                  ipver, ipver);
         }
         if (0) {
@@ -105,7 +108,7 @@ fail_reply:
               LOGGER(RDNSTUN_NAME, LOG_LEVEL_DEBUG, "No host to reply");
               break;
             case 12:
-              LOGGER(RDNSTUN_NAME, LOG_LEVEL_DEBUG,
+              LOGGER(RDNSTUN_NAME, LOG_LEVEL_WARNING,
                      "Received packet with TTL 0");
               break;
             case 13:
@@ -260,6 +263,9 @@ fail_chain:
   }
 
   // main loop
+  if (!background) {
+    LOGGER(RDNSTUN_NAME, LOG_LEVEL_MESSAGE, "Start " RDNSTUN_NAME);
+  }
   signal(SIGINT, shutdown_rdnstun);
   rdnstun(
     tunfd, v4_chains_len != 0 ? v4_chains : NULL,
