@@ -1,3 +1,4 @@
+#include <limits.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -6,10 +7,12 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <arpa/inet.h>
 #include <linux/if_tun.h>
 #include <sys/ioctl.h>
 
 #include "macro.h"
+#include "utils.h"
 #include "log.h"
 #include "iface.h"
 #include "chain.h"
@@ -137,20 +140,22 @@ static void usage (const char *progname) {
   fputs(
 "\n"
 "Address chain may be composed by the following tokens, separated by comma:\n"
-"  <addr>[-<addr>]   Host address(es)\n"
-"  ttl=<ttl>         TTL for fake host(s), default: 64\n"
-"  mtu=<mtu>         MTU for fake host(s), default: 1500\n"
-"                    Packets large than <mtu> will be silently dropped.\n"
-"  route=<network>   Route for this chain, default: 0/0\n"
-"                    If multiple chains with same route, which chain will be\n"
-"                    selected is undefined.\n"
-"  TTL and MTU are valid until next TTL/MTU specification."
+"  <addr>[-<addr>]  Host address(es)\n"
+"  ttl=<ttl>        TTL for fake host(s), default: 64\n"
+"  mtu=<mtu>        MTU for fake host(s), default: 1500\n"
+"                   Packets large than <mtu> will be silently dropped.\n"
+"  route=<network>  Route for this chain, default: 0/0\n"
+"                   If multiple chains with same route, which chain will be\n"
+"                   selected is undefined.\n"
+"  TTL and MTU are valid until next TTL/MTU specification.\n"
 "\n"
-"  -4 <v4addr_chain> IPv4 address chain\n"
-"  -6 <v6addr_chain> IPv6 address chain\n"
-"  -D                daemonize (run in background)\n"
-"  -d                enable debugging messages\n"
-"  -h                prints this help text\n", stderr);
+"  -4 <v4addr_chain>       IPv4 address chain\n"
+"  -6 <v6addr_chain>       IPv6 address chain\n"
+"  -E <step>/<prefix>,<n>  duplicate the previous chain by <n>, with interval of\n"
+"                          <step>*2^<prefix>. All route and hosts will be shifted\n"
+"  -D                      daemonize (run in background)\n"
+"  -d                      enable debugging messages\n"
+"  -h                      prints this help text\n", stderr);
 }
 
 
@@ -160,14 +165,8 @@ int main (int argc, char *argv[]) {
     return EXIT_SUCCESS;
   }
 
-  struct HostChain *v4_chains = malloc(sizeof(struct HostChain));
-  struct HostChain *v6_chains = malloc(sizeof(struct HostChain));
-  should (v4_chains != NULL && v6_chains != NULL) otherwise {
-    fprintf(stderr, "error: out of memory\n");
-    free(v4_chains);
-    free(v6_chains);
-    return EXIT_FAILURE;
-  }
+  struct HostChain *v4_chains = NULL;
+  struct HostChain *v6_chains = NULL;
   unsigned int v4_chains_len = 0;
   unsigned int v6_chains_len = 0;
   char if_name[IF_NAMESIZE] = RDNSTUN_IFACE_NAME;
@@ -175,41 +174,89 @@ int main (int argc, char *argv[]) {
 
   // Parse command line options
   bool if_name_set = false;
-  for (int option; (option = getopt(argc, argv, "-4:6:Ddh")) != -1;) {
+  bool last_chain_v6 = false;
+  for (int option; (option = getopt(argc, argv, "-4:6:E:Ddh")) != -1;) {
     int ret;
     switch (option) {
       case 1:
-        if unlikely (if_name_set) {
+        should (!if_name_set) otherwise {
           fprintf(stderr, "error: too many positional options\n");
-          return EXIT_FAILURE;
+          goto fail_arg;
         }
         if_name_set = true;
-        strncpy(if_name, optarg, sizeof(if_name) - 1);
-        if unlikely (strlen(optarg) + 1 > IF_NAMESIZE) {
+        should (strlen(optarg) < sizeof(if_name)) otherwise {
           fprintf(stderr, "error: iface name '%s' too long\n", optarg);
-          return EXIT_FAILURE;
+          goto fail_arg;
         }
+        strcpy(if_name, optarg);
         break;
       case '4': {
-        struct HostChain *new_v4_chains =
-          realloc(v4_chains, sizeof(struct HostChain) * (v4_chains_len + 2));
-        test_goto (new_v4_chains != NULL, -1) fail_chain;
-        v4_chains = new_v4_chains;
+        test_goto (irealloc(
+          (void **) &v4_chains, sizeof(struct HostChain) * (v4_chains_len + 2)
+        ) != NULL, -1) fail_chain;
         goto_nonzero (
-          HostChain_init(v4_chains + v4_chains_len, optarg, false)
-        ) fail_chain;
+          HostChain_init(v4_chains + v4_chains_len, optarg, false)) fail_chain;
         v4_chains_len++;
+        last_chain_v6 = false;
         break;
       }
       case '6': {
-        struct HostChain *new_v6_chains =
-          realloc(v6_chains, sizeof(struct HostChain) * (v6_chains_len + 2));
-        test_goto (new_v6_chains != NULL, -1) fail_chain;
-        v6_chains = new_v6_chains;
+        test_goto (irealloc(
+          (void **) &v6_chains, sizeof(struct HostChain) * (v6_chains_len + 2)
+        ) != NULL, -1) fail_chain;
         goto_nonzero (
-          HostChain_init(v6_chains + v6_chains_len, optarg, true)
-        ) fail_chain;
+          HostChain_init(v6_chains + v6_chains_len, optarg, true)) fail_chain;
         v6_chains_len++;
+        last_chain_v6 = true;
+        break;
+      }
+      case 'E': {
+        test_goto (
+          (last_chain_v6 ? v6_chains_len : v4_chains_len) > 0, 1
+        ) fail_duplicate;
+        char *step_end = strchr(optarg, '/');
+        char *prefix_end = strchr(optarg, ',');
+        test_goto (step_end != NULL && prefix_end != NULL, 2) fail_duplicate;
+
+        struct HostChain *base = last_chain_v6 ?
+          v6_chains + v6_chains_len - 1 : v4_chains + v4_chains_len - 1;
+        *step_end = '\0';
+        *prefix_end = '\0';
+        int step;
+        int prefix;
+        int n;
+        test_goto (argtoi(optarg, &step, 1, SHRT_MAX) == 0, 2) fail_duplicate;
+        test_goto (
+          argtoi(step_end + 1, &prefix, 1, last_chain_v6 ? 128 : 32) == 0, 2
+        ) fail_duplicate;
+        test_goto (
+          argtoi(prefix_end + 1, &n, 0, INT_MAX) == 0, 2) fail_duplicate;
+        test_goto (prefix <= base->prefix, 3) fail_duplicate;
+
+        test_goto (irealloc(
+          (void **) (last_chain_v6 ? &v6_chains : &v4_chains),
+          sizeof(struct HostChain) * (
+            (last_chain_v6 ? v6_chains_len : v4_chains_len) + n + 1)
+        ) != NULL, -1) fail_duplicate;
+        const int af = last_chain_v6 ? AF_INET6 : AF_INET;
+        for (int i = 1; i <= n; i++) {
+          struct HostChain *self = base + i;
+          goto_nonzero (HostChain_copy(self, base)) fail_duplicate;
+          HostChain_shift(self, step * i, prefix);
+
+          if (LogLevel_should_log(LOG_LEVEL_DEBUG)) {
+            char s_network[INET6_ADDRSTRLEN];
+            inet_ntop(af, self->network, s_network, sizeof(s_network));
+            LOGGER(RDNSTUN_NAME, LOG_LEVEL_DEBUG, "Duplicate # %d chain: %s/%d",
+                   i, s_network, self->prefix);
+          }
+
+          if (last_chain_v6) {
+            v6_chains_len++;
+          } else {
+            v4_chains_len++;
+          }
+        }
         break;
       }
       case 'D':
@@ -226,22 +273,58 @@ int main (int argc, char *argv[]) {
         goto fail;
     }
     if (0) {
+      const char *msg;
+      if (0) {
 fail_chain:
-      fprintf(stderr, "error when parsing '%s': %s\n", optarg,
-              HostChain_strerror(ret));
-      memset(v4_chains + v4_chains_len, 0, sizeof(struct HostChain));
-      memset(v6_chains + v6_chains_len, 0, sizeof(struct HostChain));
+        msg = HostChain_strerror(ret);
+      }
+      if (0) {
+fail_duplicate:
+        if (ret < 0) {
+          msg = Struct_strerror(ret);
+        } else {
+          switch (ret) {
+            case 1:
+              msg = "'E' must be specified after a chain";
+              break;
+            case 2:
+              msg = "malformed duplication specification";
+              break;
+            case 3:
+              msg = "'prefix' must be less or equal than the prefix of previous chain";
+              break;
+            default:
+              msg = NULL;
+          }
+        }
+      }
+      should (msg != NULL) otherwise {
+        msg = "unknown error";
+      }
+      fprintf(stderr, "error when parsing '%s': %s\n", optarg, msg);
+fail_arg:
+      if (v4_chains != NULL) {
+        memset(v4_chains + v4_chains_len, 0, sizeof(struct HostChain));
+      }
+      if (v6_chains != NULL) {
+        memset(v6_chains + v6_chains_len, 0, sizeof(struct HostChain));
+      }
       goto fail;
     }
   }
-  memset(v4_chains + v4_chains_len, 0, sizeof(struct HostChain));
-  memset(v6_chains + v6_chains_len, 0, sizeof(struct HostChain));
+
+  if (v4_chains != NULL) {
+    memset(v4_chains + v4_chains_len, 0, sizeof(struct HostChain));
+    HostChainArray_sort(v4_chains);
+  }
+  if (v6_chains != NULL) {
+    memset(v6_chains + v6_chains_len, 0, sizeof(struct HostChain));
+    HostChainArray_sort(v6_chains);
+  }
   should (v4_chains_len != 0 || v6_chains_len != 0) otherwise {
     fprintf(stderr, "error: must specify at least one chain\n");
     goto fail;
   }
-  HostChainArray_sort(v4_chains);
-  HostChainArray_sort(v6_chains);
 
   // initialize tun/tap interface
   int tunfd = tun_alloc(if_name, IFF_TUN);

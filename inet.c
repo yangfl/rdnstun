@@ -6,6 +6,7 @@
 #include <arpa/inet.h>
 
 #include "macro.h"
+#include "endian.h"
 #include "inet.h"
 
 
@@ -66,23 +67,24 @@ int membcmp (const void *s1, const void *s2, size_t n) {
   return cmp(c1, c2);
 }
 
-
-int inet_test_cidr (int af, const void *network, size_t prefix) {
-  unsigned short len;
+static unsigned short inet_size (int af) {
   switch (af) {
     case AF_INET6:
-      len = 128;
-      break;
+      return 128;
     case AF_INET:
-      len = 32;
-      break;
+      return 32;
     default:
       errno = EAFNOSUPPORT;
-      return -1;
+      return 0;
   }
+}
+
+int inet_check_cidr (int af, const void *network, unsigned short prefix) {
+  unsigned short len = inet_size(af);
+  return_if (len == 0) -1;
   should (prefix <= len) otherwise {
     errno = EINVAL;
-    return -1;
+    return 0;
   }
   unsigned int bytes = prefix / 8;
   unsigned int bits = prefix % 8;
@@ -97,4 +99,46 @@ int inet_test_cidr (int af, const void *network, size_t prefix) {
 
   static const uint8_t mask[16] = {0};
   return memcmp((const uint8_t *) network + bytes, mask, len / 8 - bytes) == 0;
+}
+
+
+int inet_shift (int af, void *addr, int offset, unsigned short prefix) {
+  unsigned short len = inet_size(af);
+  return_if (len == 0) -1;
+  should (prefix <= len) otherwise {
+    errno = EINVAL;
+    return -1;
+  }
+
+  if (af == AF_INET) {
+    long long shift = (long long) offset << (32 - prefix);
+    *(uint32_t *) addr = htonl(ntohl(*(uint32_t *) addr) + shift);
+  } else {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+    __int128 shift = (__int128) offset << (128 - prefix);
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    struct in6_addr_ {
+      union {
+        uint32_t __u6_addr32[4];
+        __int128 __u6_addr128;
+      };
+    };
+    struct in6_addr_ host;
+    struct in6_addr_ *net = (struct in6_addr_ *) addr;
+    host.__u6_addr32[0] = ntohl(net->__u6_addr32[3]);
+    host.__u6_addr32[1] = ntohl(net->__u6_addr32[2]);
+    host.__u6_addr32[2] = ntohl(net->__u6_addr32[1]);
+    host.__u6_addr32[3] = ntohl(net->__u6_addr32[0]);
+    host.__u6_addr128 += shift;
+    net->__u6_addr32[0] = htonl(host.__u6_addr32[3]);
+    net->__u6_addr32[1] = htonl(host.__u6_addr32[2]);
+    net->__u6_addr32[2] = htonl(host.__u6_addr32[1]);
+    net->__u6_addr32[3] = htonl(host.__u6_addr32[0]);
+#else
+    *(__int128 *) addr += shift;
+#endif
+#pragma GCC diagnostic pop
+  }
+  return 0;
 }

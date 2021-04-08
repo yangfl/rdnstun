@@ -27,6 +27,8 @@ struct HostChain {
 };
 
 
+__attribute__((nonnull, pure, warn_unused_result, access(read_only, 1)))
+size_t HostChain_nitem (const struct HostChain *self);
 __attribute__((nonnull, pure, warn_unused_result,
                access(read_only, 1), access(read_only, 2)))
 int HostChain_compare (
@@ -36,15 +38,22 @@ __attribute__((nonnull, pure, warn_unused_result,
                access(read_only, 1), access(read_only, 2)))
 bool HostChain_in (
   const struct HostChain * restrict self, const void * restrict addr);
-__attribute__((nonnull, warn_unused_result, access(read_only, 1), access(read_only, 2),
-               access(write_only, 4), access(write_only, 5)))
+__attribute__((
+  nonnull, warn_unused_result, access(read_only, 1), access(read_only, 2),
+  access(write_only, 4), access(write_only, 5)))
 void *HostChain_find (
   const struct HostChain * restrict self, const void * restrict addr,
   unsigned char ttl, bool *found, unsigned char *index);
+__attribute__((nonnull))
+int HostChain_shift (
+  struct HostChain *self, int offset, unsigned short prefix);
 __attribute__((const, warn_unused_result))
 const char *HostChain_strerror (int errnum);
 __attribute__((nonnull))
 void HostChain_destroy (struct HostChain *self);
+__attribute__((nonnull, warn_unused_result, access(read_only, 2)))
+int HostChain_copy (
+  struct HostChain * restrict self, const struct HostChain * restrict other);
 __attribute__((nonnull, warn_unused_result, access(read_only, 2)))
 int HostChain_init (
   struct HostChain * restrict self, const char * restrict s, bool v6);

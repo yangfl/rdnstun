@@ -1,4 +1,3 @@
-#include <ctype.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -9,11 +8,25 @@
 #include <netinet/ip6.h>
 
 #include "macro.h"
+#include "utils.h"
 #include "inet.h"
 #include "log.h"
 #include "host.h"
 #include "rdnstun.h"
 #include "chain.h"
+
+
+#define HostChain_AT(self, i) \
+  ((struct FakeHost *) ((self)->_buf + struct_size * (i)))
+
+
+size_t HostChain_nitem (const struct HostChain *self) {
+  const unsigned int struct_size =
+    self->v6 ? sizeof(struct FakeHost6) : sizeof(struct FakeHost);
+  unsigned int i;
+  for (i = 0; !BaseFakeHost_isnull(HostChain_AT(self, i), self->v6); i++) { }
+  return i;
+}
 
 
 int HostChain_compare (
@@ -36,8 +49,7 @@ void *HostChain_find (
   const unsigned int struct_size =
     self->v6 ? sizeof(struct FakeHost6) : sizeof(struct FakeHost);
   unsigned int i;
-  for (i = 0; ttl > 0 && !BaseFakeHost_isnull(
-        (struct FakeHost *) (self->_buf + struct_size * i), self->v6);
+  for (i = 0; ttl > 0 && !BaseFakeHost_isnull(HostChain_AT(self, i), self->v6);
        i++, ttl--) {
     if (self->v6 ?
           IN6_ARE_ADDR_EQUAL(&self->v6_chain[i].addr, addr) :
@@ -51,14 +63,29 @@ void *HostChain_find (
   i--;
 end:
   *index = i;
-  return self->_buf + struct_size * i;
+  return HostChain_AT(self, i);
+}
+
+
+int HostChain_shift (
+    struct HostChain *self, int offset, unsigned short prefix) {
+  const int af = self->v6 ? AF_INET6 : AF_INET;
+  const unsigned int struct_size =
+    self->v6 ? sizeof(struct FakeHost6) : sizeof(struct FakeHost);
+  return_if_fail (inet_shift(af, self->network, offset, prefix) == 0) 14;
+  for (unsigned int i = 0;
+       !BaseFakeHost_isnull(HostChain_AT(self, i), self->v6); i++) {
+    inet_shift(af, &HostChain_AT(self, i)->addr, offset, prefix);
+  }
+  return 0;
 }
 
 
 const char *HostChain_strerror (int errnum) {
+  if (errnum < 0) {
+    return Struct_strerror(errnum);
+  }
   switch (errnum) {
-    case -1:
-      return "out of memory";
     case 1:
       return "address not in presentation format";
     case 2:
@@ -85,6 +112,8 @@ const char *HostChain_strerror (int errnum) {
       return "TTL is zero";
     case 13:
       return "Host TTL too small";
+    case 14:
+      return "'prefix' must be less or equal than the network prefix";
     default:
       return NULL;
   }
@@ -96,18 +125,24 @@ void HostChain_destroy (struct HostChain *self) {
 }
 
 
-static int argtoi (const char s[], int *res, long min, long max) {
-  char *s_end;
-  *res = strtol(s, &s_end, 10);
-  return !isdigit(*s_end) && min <= *res && *res <= max ? 0 : 1;
+int HostChain_copy (
+    struct HostChain * restrict self, const struct HostChain * restrict other) {
+  const unsigned int struct_size =
+    other->v6 ? sizeof(struct FakeHost6) : sizeof(struct FakeHost);
+  memcpy(self, other, sizeof(struct HostChain));
+  unsigned int len = HostChain_nitem(other) + 1;
+  self->_buf = malloc(struct_size * len);
+  return_if_fail (self->_buf != NULL) -1;
+  memcpy(self->_buf, other->_buf, struct_size * len);
+  return 0;
 }
 
 
 int HostChain_init (
     struct HostChain * restrict self, const char * restrict s, bool v6) {
-  register const unsigned int struct_size =
+  const unsigned int struct_size =
     v6 ? sizeof(struct FakeHost6) : sizeof(struct FakeHost);
-  register const int af = v6 ? AF_INET6 : AF_INET;
+  const int af = v6 ? AF_INET6 : AF_INET;
 
   int ret;
   self->_buf = malloc(struct_size * MAXTTL);
@@ -152,7 +187,7 @@ int HostChain_init (
       self->prefix = prefix;
       // verify cidr
       test_goto (
-        inet_test_cidr(af, self->network, self->prefix) == 1, 4) fail;
+        inet_check_cidr(af, self->network, self->prefix) == 1, 4) fail;
 
       if (LogLevel_should_log(LOG_LEVEL_DEBUG)) {
         if (network_end != NULL) {
@@ -182,8 +217,7 @@ int HostChain_init (
       }
 
       // parse first component
-      struct FakeHost *host =
-        (struct FakeHost *) (self->_buf + struct_size * i);
+      struct FakeHost *host = HostChain_AT(self, i);
       test_goto (inet_pton(af, token, &host->addr) == 1, 1) fail;
       host->ttl = ttl;
       host->mtu = mtu;
@@ -225,8 +259,7 @@ int HostChain_init (
           unsigned int n_addr = (stop - start) * step + 1;
           test_goto (i + n_addr < MAXTTL, 2) fail;
           for (unsigned int j = 1; j < n_addr; j++) {
-            struct FakeHost *host_j =
-              (struct FakeHost *) (self->_buf + struct_size * (i + j));
+            struct FakeHost *host_j = HostChain_AT(self, i + j);
             if (v6) {
               memcpy(((struct FakeHost6 *) host_j)->addr.s6_addr, prefix,
                      sizeof(prefix));
@@ -251,9 +284,7 @@ int HostChain_init (
                      "Parsed address '%s': ", token);
         for (unsigned int j = old_i; j < i; j++) {
           char s_addr[INET6_ADDRSTRLEN];
-          inet_ntop(
-            af, &((struct FakeHost *) (self->_buf + struct_size * j))->addr,
-            s_addr, sizeof(s_addr));
+          inet_ntop( af, &HostChain_AT(self, j)->addr, s_addr, sizeof(s_addr));
           if (j != old_i) {
             logger_continue_literal(LOG_LEVEL_DEBUG, ", ");
           }

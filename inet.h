@@ -13,7 +13,9 @@ uint16_t inet_cksum (void *cksum, const void *buf, size_t count);
 __attribute__((nonnull, access(read_only, 1), access(read_only, 2)))
 int membcmp (const void *s1, const void *s2, size_t n);
 __attribute__((nonnull, access(read_only, 2)))
-int inet_test_cidr (int af, const void *network, size_t prefix);
+int inet_check_cidr (int af, const void *network, unsigned short prefix);
+__attribute__((nonnull))
+int inet_shift (int af, void *addr, int offset, unsigned short prefix);
 
 
 #endif /* INET_H */
