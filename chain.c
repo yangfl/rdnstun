@@ -9,25 +9,24 @@
 #include <netinet/ip6.h>
 
 #include "macro.h"
+#include "inet.h"
 #include "log.h"
 #include "host.h"
+#include "rdnstun.h"
 #include "chain.h"
-
-
-#define stracmp(s, l) strncmp(s, l, strlen(l))
 
 
 int HostChain_compare (
     const struct HostChain * restrict self,
     const struct HostChain * restrict other) {
   return_nonzero (cmp(other->prefix, self->prefix));
-  return memcmp(self->network, other->network, self->prefix);
+  return memcmp(self->network, other->network, (self->v6 ? 128 : 32) / 4);
 }
 
 
 bool HostChain_in (
     const struct HostChain * restrict self, const void * restrict addr) {
-  return self->prefix == 0 || memcmp(self->network, addr, self->prefix) == 0;
+  return self->prefix == 0 || membcmp(self->network, addr, self->prefix) == 0;
 }
 
 
@@ -92,7 +91,7 @@ const char *HostChain_strerror (int errnum) {
 }
 
 
-void HostChain_destroy (struct HostChain * restrict self) {
+void HostChain_destroy (struct HostChain *self) {
   free(self->_buf);
 }
 
@@ -123,6 +122,7 @@ int HostChain_init (
   for (char *saved_comma, *token = strtok_r(s_, ",", &saved_comma);
        token != NULL;
        token = strtok_r(NULL, ",", &saved_comma)) {
+#define stracmp(s, l) strncmp(s, l, strlen(l))
     if (stracmp(token, "ttl=") == 0) {
       token += strlen("ttl=");
       int new_ttl;
@@ -137,6 +137,7 @@ int HostChain_init (
       mtu = new_mtu;
     } else if (stracmp(token, "route=") == 0) {
       test_goto (!route_set, 7) fail;
+      route_set = true;
       // save prefix len
       char *network_end = strchr(token, '/');
       test_goto (network_end != NULL, 4) fail;
@@ -146,9 +147,22 @@ int HostChain_init (
       test_goto (inet_pton(af, token, self->network) == 1, 4) fail;
       // prefix len
       int prefix;
-      test_goto (argtoi(network_end + 1, &prefix, 0, 128) == 0, 4) fail;
+      test_goto (
+        argtoi(network_end + 1, &prefix, 0, v6 ? 128 : 32) == 0, 4) fail;
       self->prefix = prefix;
-      route_set = true;
+      // verify cidr
+      test_goto (
+        inet_test_cidr(af, self->network, self->prefix) == 1, 4) fail;
+
+      if (LogLevel_should_log(LOG_LEVEL_DEBUG)) {
+        if (network_end != NULL) {
+          *network_end = '/';
+        }
+        char s_network[INET6_ADDRSTRLEN];
+        inet_ntop(af, self->network, s_network, sizeof(s_network));
+        LOGGER(RDNSTUN_NAME, LOG_LEVEL_DEBUG,
+               "Parsed route '%s': %s/%d", token, s_network, self->prefix);
+      }
     } else {
       if (i == 0) {
         if (ttl == 0) {
@@ -229,22 +243,23 @@ int HostChain_init (
         }
       }
 
-      if (should_log(LOG_LEVEL_DEBUG)) {
+      if (LogLevel_should_log(LOG_LEVEL_DEBUG)) {
         if (next_dash != NULL) {
           *next_dash = '-';
         }
-        printf("Parsed address '%s': ", token);
+        LOGGER_START(RDNSTUN_NAME, LOG_LEVEL_DEBUG,
+                     "Parsed address '%s': ", token);
         for (unsigned int j = old_i; j < i; j++) {
           char s_addr[INET6_ADDRSTRLEN];
           inet_ntop(
             af, &((struct FakeHost *) (self->_buf + struct_size * j))->addr,
             s_addr, sizeof(s_addr));
           if (j != old_i) {
-            printf(", ");
+            logger_continue_literal(LOG_LEVEL_DEBUG, ", ");
           }
-          printf("%s", s_addr);
+          logger_continue_literal(LOG_LEVEL_DEBUG, s_addr);
         }
-        printf("\n");
+        logger_end(LOG_LEVEL_DEBUG);
       }
     }
   }
@@ -267,7 +282,7 @@ void *HostChainArray_find (
     unsigned char ttl, unsigned char *index) {
   void *ret = NULL;
   for (unsigned int i = 0; self[i]._buf != NULL; i++) {
-    if (HostChain_in(self, addr)) {
+    if (HostChain_in(self + i, addr)) {
       bool found = false;  // bug -Wuninitialized
       void *host = HostChain_find(self + i, addr, ttl, &found, index);
       if unlikely (host == NULL) {
@@ -317,21 +332,21 @@ int HostChain6Array_reply (
 }
 
 
-size_t HostChainArray_nitem (const struct HostChain * restrict self) {
+size_t HostChainArray_nitem (const struct HostChain *self) {
   unsigned int i;
   for (i = 0; self[i]._buf != NULL; i++) { }
   return i;
 }
 
 
-void HostChainArray_sort (struct HostChain * restrict self) {
+void HostChainArray_sort (struct HostChain *self) {
   qsort(
     self, HostChainArray_nitem(self), sizeof(struct HostChain),
     (int (*) (const void *, const void *)) HostChain_compare);
 }
 
 
-void HostChainArray_destroy (struct HostChain * restrict self) {
+void HostChainArray_destroy (struct HostChain *self) {
   for (unsigned int i = 0; self[i]._buf != NULL; i++) {
     promise (self[i]._buf != self[i + 1]._buf);
     HostChain_destroy(self + i);

@@ -23,14 +23,14 @@ traceroute to 192.168.2.1 (192.168.2.1), 30 hops max, 60 byte packets
 
 ```bash
 # optional, add a persistent tun device
-ip tuntap add dev tun-rdns mode tun
+sudo ip tuntap add dev tun-rdns mode tun
 
 # start rdnstun
-sudo ./rdnstun -4 192.168.2.10-192.168.2.1 -6 3000::f-3000::1
+sudo ./rdnstun -4 192.168.2.10-192.168.2.1 -6 3000::f-3000::1 -6 route=3000:0:0:1::/64,3000:0:0:1::f-3000:0:0:1::1
 
 # add corresponding routes
 sudo ip a a 192.168.2.254/24 dev tun-rdns
-sudo ip a a 3000::ffff/64 dev tun-rdns
+sudo ip a a 3000::ffff/48 dev tun-rdns
 sudo ip l s up dev tun-rdns
 
 # test it

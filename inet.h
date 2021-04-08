@@ -1,5 +1,5 @@
-#ifndef CHECKSUM_H
-#define CHECKSUM_H
+#ifndef INET_H
+#define INET_H
 
 #include <stddef.h>
 #include <stdint.h>
@@ -10,6 +10,10 @@ uint32_t inet_cksum_continue (uint32_t sum, const void *buf, size_t count);
 uint16_t inet_cksum_finish (uint32_t sum);
 __attribute__((nonnull(2), access(read_only, 2, 3)))
 uint16_t inet_cksum (void *cksum, const void *buf, size_t count);
+__attribute__((nonnull, access(read_only, 1), access(read_only, 2)))
+int membcmp (const void *s1, const void *s2, size_t n);
+__attribute__((nonnull, access(read_only, 2)))
+int inet_test_cidr (int af, const void *network, size_t prefix);
 
 
-#endif /* CHECKSUM_H */
+#endif /* INET_H */

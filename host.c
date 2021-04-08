@@ -9,7 +9,7 @@
 #include <netinet/ip6.h>
 
 #include "macro.h"
-#include "checksum.h"
+#include "inet.h"
 #include "log.h"
 #include "rdnstun.h"
 #include "host.h"
@@ -50,7 +50,7 @@ int FakeHost_reply (
   send->saddr = self->addr.s_addr;
   send->daddr = receive->saddr;
 
-  if (should_log(LOG_LEVEL_DEBUG)) {
+  if (LogLevel_should_log(LOG_LEVEL_DEBUG)) {
     char s_src_addr[INET_ADDRSTRLEN];
     char s_dst_addr[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &receive->saddr, s_src_addr, sizeof(s_src_addr));
@@ -136,7 +136,7 @@ int FakeHost6_reply (
   memcpy(&send->ip6_src, &self->addr, sizeof(struct in6_addr));
   memcpy(&send->ip6_dst, &receive->ip6_src, sizeof(struct in6_addr));
 
-  if (should_log(LOG_LEVEL_DEBUG)) {
+  if (LogLevel_should_log(LOG_LEVEL_DEBUG)) {
     char s_src_addr[INET6_ADDRSTRLEN];
     char s_dst_addr[INET6_ADDRSTRLEN];
     inet_ntop(AF_INET6, &receive->ip6_src, s_src_addr, sizeof(s_src_addr));

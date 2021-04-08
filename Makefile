@@ -47,7 +47,7 @@ LDFLAGS += -Wl,--gc-sections
 # CFLAGS += $(LIBS_CFLAGS)
 # LDFLAGS += $(LIBS_LDFLAGS)
 
-SOURCES := rdnstun.c chain.c checksum.c host.c iface.c log.c
+SOURCES := rdnstun.c chain.c host.c iface.c inet.c log.c
 OBJS := $(SOURCES:.c=.o)
 PREREQUISITES := $(SOURCES:.c=.d)
 THIS_MAKEFILE_LIST := $(MAKEFILE_LIST)

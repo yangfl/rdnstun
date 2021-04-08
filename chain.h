@@ -44,7 +44,7 @@ void *HostChain_find (
 __attribute__((const, warn_unused_result))
 const char *HostChain_strerror (int errnum);
 __attribute__((nonnull))
-void HostChain_destroy (struct HostChain * restrict self);
+void HostChain_destroy (struct HostChain *self);
 __attribute__((nonnull, warn_unused_result, access(read_only, 2)))
 int HostChain_init (
   struct HostChain * restrict self, const char * restrict s, bool v6);
@@ -70,11 +70,11 @@ int HostChain6Array_reply (
   const struct ip6_hdr * restrict receive, unsigned short receive_len,
   struct ip6_hdr * restrict send, unsigned short * restrict send_len);
 __attribute__((nonnull, pure, warn_unused_result, access(read_only, 1)))
-size_t HostChainArray_nitem (const struct HostChain * restrict self);
+size_t HostChainArray_nitem (const struct HostChain *self);
 __attribute__((nonnull))
-void HostChainArray_sort (struct HostChain * restrict self);
+void HostChainArray_sort (struct HostChain *self);
 __attribute__((nonnull))
-void HostChainArray_destroy (struct HostChain * restrict self);
+void HostChainArray_destroy (struct HostChain *self);
 
 
 #endif /* CHAIN_H */

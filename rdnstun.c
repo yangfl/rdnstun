@@ -64,7 +64,7 @@ static void rdnstun (
       continue;
     }
 
-    LOGGER(RDNSTUN_NAME, LOG_LEVEL_DEBUG, NULL);
+    logger_end(LOG_LEVEL_DEBUG);
     // data from tun/tap: read it
     unsigned char pkt_receive[IP_MAXPACKET];
     int pkt_receive_len = cread(tunfd, pkt_receive, sizeof(pkt_receive));
@@ -83,15 +83,13 @@ static void rdnstun (
         goto_if_fail (v4_chains != NULL) undefined_ipver;
         goto_nonzero (HostChain4Array_reply(
           v4_chains, (struct iphdr *) pkt_receive, pkt_receive_len,
-          (struct iphdr *) pkt_send, &pkt_send_len
-        )) fail_reply;
+          (struct iphdr *) pkt_send, &pkt_send_len)) fail_reply;
         break;
       case 6:
         goto_if_fail (v6_chains != NULL) undefined_ipver;
         goto_nonzero (HostChain6Array_reply(
           v6_chains, (struct ip6_hdr *) pkt_receive, pkt_receive_len,
-          (struct ip6_hdr *) pkt_send, &pkt_send_len
-        )) fail_reply;
+          (struct ip6_hdr *) pkt_send, &pkt_send_len)) fail_reply;
         break;
       default:
         LOGGER(RDNSTUN_NAME, LOG_LEVEL_DEBUG, "Unknown IP version %d", ipver);
@@ -229,9 +227,10 @@ int main (int argc, char *argv[]) {
     }
     if (0) {
 fail_chain:
-      fprintf(stderr, "error: %s\n", HostChain_strerror(ret));
+      fprintf(stderr, "error when parsing '%s': %s\n", optarg,
+              HostChain_strerror(ret));
       memset(v4_chains + v4_chains_len, 0, sizeof(struct HostChain));
-      memset(v4_chains + v4_chains_len, 0, sizeof(struct HostChain));
+      memset(v6_chains + v6_chains_len, 0, sizeof(struct HostChain));
       goto fail;
     }
   }
