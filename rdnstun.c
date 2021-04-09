@@ -218,8 +218,6 @@ int main (int argc, char *argv[]) {
         char *prefix_end = strchr(optarg, ',');
         test_goto (step_end != NULL && prefix_end != NULL, 2) fail_duplicate;
 
-        struct HostChain *base = last_chain_v6 ?
-          v6_chains + v6_chains_len - 1 : v4_chains + v4_chains_len - 1;
         *step_end = '\0';
         *prefix_end = '\0';
         int step;
@@ -231,13 +229,16 @@ int main (int argc, char *argv[]) {
         ) fail_duplicate;
         test_goto (
           argtoi(prefix_end + 1, &n, 0, INT_MAX) == 0, 2) fail_duplicate;
-        test_goto (prefix <= base->prefix, 3) fail_duplicate;
 
         test_goto (irealloc(
           (void **) (last_chain_v6 ? &v6_chains : &v4_chains),
           sizeof(struct HostChain) * (
             (last_chain_v6 ? v6_chains_len : v4_chains_len) + n + 1)
         ) != NULL, -1) fail_duplicate;
+        struct HostChain *base = last_chain_v6 ?
+          v6_chains + v6_chains_len - 1 : v4_chains + v4_chains_len - 1;
+        test_goto (prefix <= base->prefix, 3) fail_duplicate;
+
         const int af = last_chain_v6 ? AF_INET6 : AF_INET;
         for (int i = 1; i <= n; i++) {
           struct HostChain *self = base + i;
