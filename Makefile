@@ -7,6 +7,7 @@ else
 	RELEASE ?= 1
 endif
 
+# default
 CPPFLAGS ?= -fdiagnostics-color=always
 ifeq ($(RELEASE), 0)
 	CFLAGS ?= -Os -fPIC
@@ -15,6 +16,7 @@ else
 endif
 LDFLAGS ?= -pie
 
+# debug
 ifeq ($(DEBUG), 1)
 	CFLAGS += -g
 endif
@@ -22,10 +24,12 @@ ifeq ($(RELEASE), 0)
 	CPPFLAGS += -DDEBUG
 endif
 
+# hardening
 CPPFLAGS += -D_FORTIFY_SOURCE=2
 CFLAGS += -fstack-protector-strong
 LDFLAGS += -Wl,-z,relro
 
+# diagnosis
 CWARN ?= -Wall -Wextra -Wpedantic -Werror=format-security \
 	-Wno-cast-function-type -Wno-missing-field-initializers
 ifeq ($(DEBUG), 1)
@@ -33,9 +37,10 @@ ifeq ($(DEBUG), 1)
 endif
 CFLAGS += $(CWARN)
 
+# program flags
 CPPFLAGS += -D_DEFAULT_SOURCE
 CFLAGS += -std=c2x
-LDFLAGS += -Wl,--gc-sections
+LDFLAGS += -Wl,--gc-sections -flto=auto -fwhole-program
 
 # LIBS :=
 # PKG_CONFIG ?= pkg-config

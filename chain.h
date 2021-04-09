@@ -83,6 +83,8 @@ size_t HostChainArray_nitem (const struct HostChain *self);
 __attribute__((nonnull))
 void HostChainArray_sort (struct HostChain *self);
 __attribute__((nonnull))
+void HostChainArray_destroy_size (struct HostChain *self, size_t n);
+__attribute__((nonnull))
 void HostChainArray_destroy (struct HostChain *self);
 
 

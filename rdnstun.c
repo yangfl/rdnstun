@@ -145,22 +145,22 @@ static void usage (const char *progname) {
 "  mtu=<mtu>        MTU for fake host(s), default: 1500\n"
 "                   Packets large than <mtu> will be silently dropped.\n"
 "  route=<network>  Route for this chain, default: 0/0\n"
-"                   If multiple chains with same route, which chain will be\n"
-"                   selected is undefined.\n"
-"  TTL and MTU are valid until next TTL/MTU specification.\n"
+"                   If multiple chains with same route, it is undefined which\n"
+"                   chain will be selected.\n"
+"  TTL and MTU will take effect until next TTL/MTU specification.\n"
 "\n"
 "  -4 <v4addr_chain>       IPv4 address chain\n"
 "  -6 <v6addr_chain>       IPv6 address chain\n"
-"  -E <step>/<prefix>,<n>  duplicate the previous chain by <n>, with interval of\n"
+"  -E <step>/<prefix>,<n>  duplicates the previous chain by <n>, with interval of\n"
 "                          <step>*2^<prefix>. All route and hosts will be shifted\n"
 "  -D                      daemonize (run in background)\n"
-"  -d                      enable debugging messages\n"
+"  -d                      enables debugging messages\n"
 "  -h                      prints this help text\n", stderr);
 }
 
 
 int main (int argc, char *argv[]) {
-  if (argc == 1) {
+  if (argc <= 1) {
     usage(argv[0]);
     return EXIT_SUCCESS;
   }
@@ -184,7 +184,7 @@ int main (int argc, char *argv[]) {
           goto fail_arg;
         }
         if_name_set = true;
-        should (strlen(optarg) < sizeof(if_name)) otherwise {
+        should (strnlen(optarg, sizeof(if_name)) < sizeof(if_name)) otherwise {
           fprintf(stderr, "error: iface name '%s' too long\n", optarg);
           goto fail_arg;
         }
@@ -223,12 +223,13 @@ int main (int argc, char *argv[]) {
         int step;
         int prefix;
         int n;
-        test_goto (argtoi(optarg, &step, 1, SHRT_MAX) == 0, 2) fail_duplicate;
-        test_goto (
-          argtoi(step_end + 1, &prefix, 1, last_chain_v6 ? 128 : 32) == 0, 2
-        ) fail_duplicate;
-        test_goto (
-          argtoi(prefix_end + 1, &n, 0, INT_MAX) == 0, 2) fail_duplicate;
+        bool parsed_int =
+          argtoi(optarg, &step, 1, SHRT_MAX) == 0 &&
+          argtoi(step_end + 1, &prefix, 1, last_chain_v6 ? 128 : 32) == 0 &&
+          argtoi(prefix_end + 1, &n, 0, INT_MAX) == 0;
+        *step_end = '/';
+        *prefix_end = ',';
+        test_goto (parsed_int, 2) fail_duplicate;
 
         test_goto (irealloc(
           (void **) (last_chain_v6 ? &v6_chains : &v4_chains),
@@ -270,50 +271,44 @@ int main (int argc, char *argv[]) {
         usage(argv[0]);
         goto end;
       default:
-        fprintf(stderr, "error: unknown option '%c'\n", option);
-        goto fail;
-    }
-    if (0) {
-      const char *msg;
-      if (0) {
+        // getopt already print error for us
+        // fprintf(stderr, "error: unknown option '%c'\n", option);
+        if (0) {
+          const char *msg;
+          if (0) {
 fail_chain:
-        msg = HostChain_strerror(ret);
-      }
-      if (0) {
-fail_duplicate:
-        if (ret < 0) {
-          msg = Struct_strerror(ret);
-        } else {
-          switch (ret) {
-            case 1:
-              msg = "'E' must be specified after a chain";
-              break;
-            case 2:
-              msg = "malformed duplication specification";
-              break;
-            case 3:
-              msg = "'prefix' must be less or equal than the prefix of previous chain";
-              break;
-            default:
-              msg = NULL;
+            msg = HostChain_strerror(ret);
           }
+          if (0) {
+fail_duplicate:
+            switch (ret) {
+              case 1:
+                msg = "'E' must be specified after a chain";
+                break;
+              case 2:
+                msg = "malformed duplication specification";
+                break;
+              case 3:
+                msg = "'prefix' must be less or equal than the prefix of previous chain";
+                break;
+              default:
+                msg = Struct_strerror(ret);
+            }
+          }
+          should (msg != NULL) otherwise {
+            msg = "unknown error";
+          }
+          fprintf(stderr, "error when parsing '%s': %s\n", optarg, msg);
         }
-      }
-      should (msg != NULL) otherwise {
-        msg = "unknown error";
-      }
-      fprintf(stderr, "error when parsing '%s': %s\n", optarg, msg);
 fail_arg:
-      if (v4_chains != NULL) {
-        memset(v4_chains + v4_chains_len, 0, sizeof(struct HostChain));
-      }
-      if (v6_chains != NULL) {
-        memset(v6_chains + v6_chains_len, 0, sizeof(struct HostChain));
-      }
-      goto fail;
+        goto fail;
     }
   }
 
+  should (v4_chains_len != 0 || v6_chains_len != 0) otherwise {
+    fprintf(stderr, "error: must specify at least one chain\n");
+    goto fail;
+  }
   if (v4_chains != NULL) {
     memset(v4_chains + v4_chains_len, 0, sizeof(struct HostChain));
     HostChainArray_sort(v4_chains);
@@ -321,10 +316,6 @@ fail_arg:
   if (v6_chains != NULL) {
     memset(v6_chains + v6_chains_len, 0, sizeof(struct HostChain));
     HostChainArray_sort(v6_chains);
-  }
-  should (v4_chains_len != 0 || v6_chains_len != 0) otherwise {
-    fprintf(stderr, "error: must specify at least one chain\n");
-    goto fail;
   }
 
   // initialize tun/tap interface
@@ -363,11 +354,11 @@ fail:
     ret = EXIT_FAILURE;
   }
   if (v4_chains != NULL) {
-    HostChainArray_destroy(v4_chains);
+    HostChainArray_destroy_size(v4_chains, v4_chains_len);
     free(v4_chains);
   }
   if (v6_chains != NULL) {
-    HostChainArray_destroy(v6_chains);
+    HostChainArray_destroy_size(v6_chains, v6_chains_len);
     free(v6_chains);
   }
   return ret;

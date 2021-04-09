@@ -82,9 +82,6 @@ int HostChain_shift (
 
 
 const char *HostChain_strerror (int errnum) {
-  if (errnum < 0) {
-    return Struct_strerror(errnum);
-  }
   switch (errnum) {
     case 1:
       return "address not in presentation format";
@@ -115,7 +112,7 @@ const char *HostChain_strerror (int errnum) {
     case 14:
       return "'prefix' must be less or equal than the network prefix";
     default:
-      return NULL;
+      return Struct_strerror(errnum);
   }
 }
 
@@ -374,6 +371,14 @@ void HostChainArray_sort (struct HostChain *self) {
   qsort(
     self, HostChainArray_nitem(self), sizeof(struct HostChain),
     (int (*) (const void *, const void *)) HostChain_compare);
+}
+
+
+void HostChainArray_destroy_size (struct HostChain *self, size_t n) {
+  for (unsigned int i = 0; i < n; i++) {
+    promise (self[i]._buf != self[i + 1]._buf);
+    HostChain_destroy(self + i);
+  }
 }
 
 
