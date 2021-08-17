@@ -2,7 +2,6 @@
 #define CHAIN_H
 
 #include <stdbool.h>
-
 #include <netinet/ip.h>
 #include <netinet/ip6.h>
 
@@ -17,13 +16,13 @@ struct HostChain {
     struct FakeHost6 *v6_chain;
     char *_buf;
   };
-  bool v6;
-  unsigned char prefix;
   union {
     struct in_addr v4_network;
     struct in6_addr v6_network;
     char network[1];
   };
+  unsigned char prefix;
+  bool v6;
 };
 
 

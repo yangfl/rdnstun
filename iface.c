@@ -2,7 +2,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
-
 #include <net/if.h>
 #include <linux/if_tun.h>
 #include <sys/ioctl.h>

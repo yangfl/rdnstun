@@ -2,7 +2,6 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
-
 #include <arpa/inet.h>
 #include <netinet/ip.h>
 #include <netinet/ip6.h>
@@ -184,7 +183,7 @@ int HostChain_init (
       self->prefix = prefix;
       // verify cidr
       test_goto (
-        inet_check_cidr(af, self->network, self->prefix) == 1, 4) fail;
+        inet_isnetwork(af, self->network, self->prefix) == 1, 4) fail;
 
       if (LogLevel_should_log(LOG_LEVEL_DEBUG)) {
         if (network_end != NULL) {

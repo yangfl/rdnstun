@@ -2,8 +2,8 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
-
 #include <arpa/inet.h>
+#include <netinet/in.h>
 
 #include "macro.h"
 #include "endian.h"
@@ -79,30 +79,44 @@ static unsigned short inet_size (int af) {
   }
 }
 
-int inet_check_cidr (int af, const void *network, unsigned short prefix) {
-  unsigned short len = inet_size(af);
-  return_if (len == 0) -1;
-  should (prefix <= len) otherwise {
-    errno = EINVAL;
-    return 0;
-  }
-  unsigned int bytes = prefix / 8;
-  unsigned int bits = prefix % 8;
 
-  if (bits != 0) {
-    if ((((const uint8_t *) network)[bytes] & ~((uint8_t) -1 << (8 - bits)))
-        != 0) {
-      return 0;
-    }
-    bytes++;
-  }
-
-  static const uint8_t mask[16] = {0};
-  return memcmp((const uint8_t *) network + bytes, mask, len / 8 - bytes) == 0;
+static in_addr_t _inet_tomask (unsigned int prefix) {
+  return htonl(~((1u << (32 - prefix)) - 1u));
 }
 
 
-int inet_shift (int af, void *addr, int offset, unsigned short prefix) {
+static int _inet_isnetwork4 (struct in_addr network, unsigned int prefix) {
+  return (network.s_addr & ~_inet_tomask(prefix)) == 0;
+}
+
+
+static int _inet_isnetwork6 (struct in6_addr network, unsigned int prefix) {
+  int prefix32 = prefix / 32;
+  int prefix32rem = prefix % 32;
+  for (int i = 3; i >= prefix32 + !!prefix32rem; i--) {
+    if (network.s6_addr32[i] != 0) {
+      return 0;
+    }
+  }
+  return prefix32rem == 0 ? 1 : _inet_isnetwork4(
+    *(struct in_addr *) &network.s6_addr32[prefix32], prefix32rem);
+}
+
+
+int inet_isnetwork (int af, const void *network, unsigned int prefix) {
+  switch (af) {
+    case AF_INET:
+      return _inet_isnetwork4(*(const struct in_addr *) network, prefix);
+    case AF_INET6:
+      return _inet_isnetwork6(*(const struct in6_addr *) network, prefix);
+    default:
+      errno = EAFNOSUPPORT;
+      return 0;
+  }
+}
+
+
+int inet_shift (int af, void *addr, int offset, unsigned int prefix) {
   unsigned short len = inet_size(af);
   return_if (len == 0) -1;
   should (prefix <= len) otherwise {
@@ -117,26 +131,26 @@ int inet_shift (int af, void *addr, int offset, unsigned short prefix) {
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wpedantic"
     __int128 shift = (__int128) offset << (128 - prefix);
-#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-    struct in6_addr_ {
-      union {
-        uint32_t __u6_addr32[4];
-        __int128 __u6_addr128;
-      };
+#if __BYTE_ORDER == __LITTLE_ENDIAN
+    union in6_addr_ {
+      uint32_t addr32[4];
+      __int128 addr128;
     };
-    struct in6_addr_ host;
-    struct in6_addr_ *net = (struct in6_addr_ *) addr;
-    host.__u6_addr32[0] = ntohl(net->__u6_addr32[3]);
-    host.__u6_addr32[1] = ntohl(net->__u6_addr32[2]);
-    host.__u6_addr32[2] = ntohl(net->__u6_addr32[1]);
-    host.__u6_addr32[3] = ntohl(net->__u6_addr32[0]);
-    host.__u6_addr128 += shift;
-    net->__u6_addr32[0] = htonl(host.__u6_addr32[3]);
-    net->__u6_addr32[1] = htonl(host.__u6_addr32[2]);
-    net->__u6_addr32[2] = htonl(host.__u6_addr32[1]);
-    net->__u6_addr32[3] = htonl(host.__u6_addr32[0]);
-#else
+    union in6_addr_ host;
+    union in6_addr_ *net = (union in6_addr_ *) addr;
+    host.addr32[0] = ntohl(net->addr32[3]);
+    host.addr32[1] = ntohl(net->addr32[2]);
+    host.addr32[2] = ntohl(net->addr32[1]);
+    host.addr32[3] = ntohl(net->addr32[0]);
+    host.addr128 += shift;
+    net->addr32[0] = htonl(host.addr32[3]);
+    net->addr32[1] = htonl(host.addr32[2]);
+    net->addr32[2] = htonl(host.addr32[1]);
+    net->addr32[3] = htonl(host.addr32[0]);
+#elif __BYTE_ORDER == __BIG_ENDIAN
     *(__int128 *) addr += shift;
+#else
+  #error "Compiler did not define __BYTE_ORDER"
 #endif
 #pragma GCC diagnostic pop
   }

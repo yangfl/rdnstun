@@ -1,7 +1,6 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
-
 #include <arpa/inet.h>
 #include <netinet/icmp6.h>
 #include <netinet/ip.h>

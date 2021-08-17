@@ -5,8 +5,8 @@
 #define likely(x)       (__builtin_expect(!!(x), 1))
 #define unlikely(x)     (__builtin_expect(!!(x), 0))
 
-#define should(test) if likely (test)
-#define otherwise ; else
+#define should(test) if likely (test) {
+#define otherwise } else
 #define do_once switch (1) case 1:
 
 #define return_if(expr) if (expr) return
