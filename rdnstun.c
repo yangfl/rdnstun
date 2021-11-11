@@ -7,6 +7,10 @@
 #include <string.h>
 #include <unistd.h>
 #include <arpa/inet.h>
+#include <netinet/icmp6.h>
+#include <netinet/ip.h>
+#include <netinet/ip_icmp.h>
+#include <netinet/ip6.h>
 #include <linux/if_tun.h>
 #include <sys/ioctl.h>
 
@@ -68,30 +72,25 @@ static void rdnstun (
 
     logger_end(LOG_LEVEL_DEBUG);
     // data from tun/tap: read it
-    unsigned char pkt_receive[IP_MAXPACKET];
-    int pkt_receive_len = cread(tunfd, pkt_receive, sizeof(pkt_receive));
-    should (pkt_receive_len > 0) otherwise {
-      break;
-    }
+    unsigned char packet[IP_MAXPACKET];
+    int pkt_receive_len = cread(tunfd, packet, sizeof(packet));
+    break_if_fail (pkt_receive_len > 0);
     LOGGER(RDNSTUN_NAME, LOG_LEVEL_DEBUG,
            "Read %d bytes from the interface", pkt_receive_len);
 
-    unsigned char pkt_send[IP_MAXPACKET];
-    unsigned short pkt_send_len;
-    register unsigned char ipver = ((struct iphdr *) pkt_receive)->version;
+    unsigned short pkt_send_len = pkt_receive_len;
+    unsigned char ipver = ((struct ip *) packet)->ip_v;
     switch (ipver) {
       int ret;
       case 4:
         goto_if_fail (v4_chains != NULL) undefined_ipver;
         goto_nonzero (HostChain4Array_reply(
-          v4_chains, (struct iphdr *) pkt_receive, pkt_receive_len,
-          (struct iphdr *) pkt_send, &pkt_send_len)) fail_reply;
+          v4_chains, packet, &pkt_send_len)) fail_reply;
         break;
       case 6:
         goto_if_fail (v6_chains != NULL) undefined_ipver;
         goto_nonzero (HostChain6Array_reply(
-          v6_chains, (struct ip6_hdr *) pkt_receive, pkt_receive_len,
-          (struct ip6_hdr *) pkt_send, &pkt_send_len)) fail_reply;
+          v6_chains, packet, &pkt_send_len)) fail_reply;
         break;
       default:
         LOGGER(RDNSTUN_NAME, LOG_LEVEL_DEBUG, "Unknown IP version %d", ipver);
@@ -124,7 +123,7 @@ fail_reply:
     }
     // write it into the tun/tap interface
     if likely (pkt_send_len > 0) {
-      int n_write = cwrite(tunfd, pkt_send, pkt_send_len);
+      int n_write = cwrite(tunfd, packet, pkt_send_len);
       if likely (n_write >= 0) {
         LOGGER(RDNSTUN_NAME, LOG_LEVEL_DEBUG,
                "Write %d bytes to the interface", n_write);
@@ -288,7 +287,8 @@ fail_duplicate:
                 msg = "malformed duplication specification";
                 break;
               case 3:
-                msg = "'prefix' must be less or equal than the prefix of previous chain";
+                msg = "'prefix' must be less or equal than the prefix of "
+                      "previous chain";
                 break;
               default:
                 msg = Struct_strerror(ret);

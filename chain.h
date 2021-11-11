@@ -12,8 +12,8 @@ struct FakeHost6;
 
 struct HostChain {
   union {
-    struct FakeHost *v4_chain;
-    struct FakeHost6 *v6_chain;
+    struct FakeHost *v4_hosts;
+    struct FakeHost6 *v6_hosts;
     char *_buf;
   };
   union {
@@ -65,18 +65,12 @@ __attribute__((nonnull, warn_unused_result, access(read_only, 1),
 void *HostChainArray_find (
   const struct HostChain * restrict self, const void * restrict addr,
   unsigned char ttl, unsigned char *index);
-__attribute__((nonnull, access(read_only, 1), access(read_only, 2),
-               access(write_only, 4), access(write_only, 5)))
+__attribute__((nonnull, access(read_only, 1)))
 int HostChain4Array_reply (
-  const struct HostChain * restrict self,
-  const struct iphdr * restrict receive, unsigned short receive_len,
-  struct iphdr * restrict send, unsigned short * restrict send_len);
-__attribute__((nonnull, access(read_only, 1), access(read_only, 2),
-               access(write_only, 4), access(write_only, 5)))
+  const struct HostChain * restrict self, void *packet, unsigned short *len);
+__attribute__((nonnull, access(read_only, 1)))
 int HostChain6Array_reply (
-  const struct HostChain * restrict self,
-  const struct ip6_hdr * restrict receive, unsigned short receive_len,
-  struct ip6_hdr * restrict send, unsigned short * restrict send_len);
+  const struct HostChain * restrict self, void *packet, unsigned short *len);
 __attribute__((nonnull, pure, warn_unused_result, access(read_only, 1)))
 size_t HostChainArray_nitem (const struct HostChain *self);
 __attribute__((nonnull))

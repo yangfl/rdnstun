@@ -10,6 +10,9 @@
 #include "inet.h"
 
 
+extern uint16_t inet_cksum_finish (uint32_t sum);
+
+
 uint32_t inet_cksum_continue (uint32_t sum, const void *buf, size_t count) {
   const uint16_t *addr = buf;
 
@@ -28,28 +31,30 @@ uint32_t inet_cksum_continue (uint32_t sum, const void *buf, size_t count) {
 }
 
 
-uint16_t inet_cksum_finish (uint32_t sum) {
-  // Fold 32-bit sum to 16 bits
-  sum = (sum >> 16) + (sum & 0xffff);  /* add high-16 to low-16 */
-  sum += (sum >> 16);      /* add carry */
-  sum = ~sum;
-  return sum;
-}
-
-
-uint16_t inet_cksum (void *cksum, const void *buf, size_t count) {
+uint16_t _inet_cksum (void *cksum, const void *buf, size_t count, int append) {
   uint16_t *ip_cksum = cksum;
   // first, set cksum to 0
   if (ip_cksum != NULL) {
     *ip_cksum = 0;
   }
   // calculate cksum
-  uint16_t sum = inet_cksum_finish(inet_cksum_continue(0, buf, count));
+  uint16_t sum = inet_cksum_finish(
+    (append ? 0xffff : 0) + inet_cksum_continue(0, buf, count));
   // write cksum
   if (ip_cksum != NULL) {
     *ip_cksum = sum;
   }
   return sum;
+}
+
+
+uint16_t inet_cksum_header (void *cksum, const void *buf, size_t count) {
+  return _inet_cksum(cksum, buf, count, 1);
+}
+
+
+uint16_t inet_cksum (void *cksum, const void *buf, size_t count) {
+  return _inet_cksum(cksum, buf, count, 0);
 }
 
 

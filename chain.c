@@ -51,8 +51,8 @@ void *HostChain_find (
   for (i = 0; ttl > 0 && !BaseFakeHost_isnull(HostChain_AT(self, i), self->v6);
        i++, ttl--) {
     if (self->v6 ?
-          IN6_ARE_ADDR_EQUAL(&self->v6_chain[i].addr, addr) :
-          self->v4_chain[i].addr.s_addr == ((struct in_addr *) addr)->s_addr) {
+          IN6_ARE_ADDR_EQUAL(&self->v6_hosts[i].addr, addr) :
+          self->v4_hosts[i].addr.s_addr == ((struct in_addr *) addr)->s_addr) {
       *found = true;
       goto end;
     }
@@ -125,7 +125,7 @@ int HostChain_copy (
     struct HostChain * restrict self, const struct HostChain * restrict other) {
   const unsigned int struct_size =
     other->v6 ? sizeof(struct FakeHost6) : sizeof(struct FakeHost);
-  memcpy(self, other, sizeof(struct HostChain));
+  *self = *other;
   unsigned int len = HostChain_nitem(other) + 1;
   self->_buf = malloc(struct_size * len);
   return_if_fail (self->_buf != NULL) -1;
@@ -144,6 +144,7 @@ int HostChain_init (
   self->_buf = malloc(struct_size * MAXTTL);
   char *s_ = strdup(s);
   test_goto (self->_buf != NULL && s_ != NULL, -1) fail;
+  self->prefix = 0;
   self->v6 = v6;
 
   bool route_set = false;
@@ -293,6 +294,7 @@ int HostChain_init (
   test_goto (i != 0, 10) fail;
 
   free(s_);
+  // resize buf and finish with 0
   self->_buf = realloc(self->_buf, struct_size * (i + 1));
   memset(self->_buf + struct_size * i, 0, struct_size);
   return 0;
@@ -309,17 +311,12 @@ void *HostChainArray_find (
     unsigned char ttl, unsigned char *index) {
   void *ret = NULL;
   for (unsigned int i = 0; self[i]._buf != NULL; i++) {
-    if (HostChain_in(self + i, addr)) {
-      bool found = false;  // bug -Wuninitialized
-      void *host = HostChain_find(self + i, addr, ttl, &found, index);
-      if unlikely (host == NULL) {
-        continue;
-      }
-      ret = host;
-      if (found) {
-        break;
-      }
-    }
+    continue_if_not (HostChain_in(self + i, addr));
+    bool found;
+    void *host = HostChain_find(self + i, addr, ttl, &found, index);
+    break_if_not (host != NULL);
+    ret = host;
+    break_if (found);
   }
   return ret;
 }
@@ -327,14 +324,14 @@ void *HostChainArray_find (
 
 int HostChain4Array_reply (
     const struct HostChain * restrict self,
-    const struct iphdr * restrict receive, unsigned short receive_len,
-    struct iphdr * restrict send, unsigned short * restrict send_len) {
-  return_if_fail (receive->ttl > 0) 12;
-  unsigned char index = 0;  // bug -Wuninitialized
+    void *packet, unsigned short *len) {
+  const struct ip *receive = packet;
+  return_if_fail (receive->ip_ttl > 0) 12;
+  unsigned char index;
   const struct FakeHost *host = HostChainArray_find(
-    self, &receive->daddr, receive->ttl, &index);
+    self, &receive->ip_dst, receive->ip_ttl, &index);
   return_if_fail (host != NULL) 11;
-  int ret = FakeHost_reply(host, receive, receive_len, index, send, send_len);
+  int ret = FakeHost_reply(host, index, packet, len);
   if (ret > 0) {
     ret += 12;
   }
@@ -344,14 +341,14 @@ int HostChain4Array_reply (
 
 int HostChain6Array_reply (
     const struct HostChain * restrict self,
-    const struct ip6_hdr * restrict receive, unsigned short receive_len,
-    struct ip6_hdr * restrict send, unsigned short * restrict send_len) {
+    void *packet, unsigned short *len) {
+  const struct ip6_hdr *receive = packet;
   return_if_fail (receive->ip6_hlim > 0) 12;
-  unsigned char index = 0;  // bug -Wuninitialized
+  unsigned char index;
   const struct FakeHost6 *host = HostChainArray_find(
     self, &receive->ip6_dst, receive->ip6_hlim, &index);
   return_if_fail (host != NULL) 11;
-  int ret = FakeHost6_reply(host, receive, receive_len, index, send, send_len);
+  int ret = FakeHost6_reply(host, index, packet, len);
   if (ret > 0) {
     ret += 12;
   }
