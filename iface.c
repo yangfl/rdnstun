@@ -1,3 +1,4 @@
+#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
@@ -11,7 +12,7 @@
 #include "iface.h"
 
 
-int tun_alloc (char ifname[static IF_NAMESIZE], int flags) {
+int tun_alloc (char ifname[IF_NAMESIZE], int flags) {
   int fd = open("/dev/net/tun", O_RDWR);
   should (fd >= 0) otherwise {
     perror("Error when opening /dev/net/tun");
@@ -27,8 +28,10 @@ int tun_alloc (char ifname[static IF_NAMESIZE], int flags) {
 
   int err = ioctl(fd, TUNSETIFF, &ifr);
   should (err >= 0) otherwise {
+    int saved_errno = errno;
     perror("tun_alloc: ioctl(TUNSETIFF)");
     close(fd);
+    errno = saved_errno;
     return err;
   }
 
@@ -39,7 +42,29 @@ int tun_alloc (char ifname[static IF_NAMESIZE], int flags) {
 }
 
 
-int ifup (const char ifname[IF_NAMESIZE]) {
+int tuns_alloc (
+    char ifname[IF_NAMESIZE], int flags, int count, int fds[static count]) {
+  return_if_fail (count > 0) 255;
+  char buffer[IF_NAMESIZE];
+  if (ifname == NULL) {
+    ifname = buffer;
+  }
+  for (int i = 0; i < count; i++) {
+    fds[i] = tun_alloc(ifname, flags | IFF_MULTI_QUEUE);
+    should (fds[i] >= 0) otherwise {
+      int saved_errno = errno;
+      for (i--; i >= 0; i--) {
+        close(fds[i]);
+      }
+      errno = saved_errno;
+      return 1;
+    }
+  }
+  return 0;
+}
+
+
+int ifup (const char ifname[static IF_NAMESIZE]) {
   int fd = socket(AF_INET, SOCK_DGRAM, 0);
   should (fd >= 0) otherwise {
     perror("ifup: socket(SOCK_DGRAM)");

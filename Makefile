@@ -40,7 +40,7 @@ CFLAGS += $(CWARN)
 # program flags
 CPPFLAGS += -D_DEFAULT_SOURCE
 CFLAGS += -std=c2x
-LDFLAGS += -Wl,--gc-sections -flto=auto -fwhole-program
+LDFLAGS += -Wl,--gc-sections -flto=auto -fwhole-program -pthread
 
 # LIBS :=
 # PKG_CONFIG ?= pkg-config

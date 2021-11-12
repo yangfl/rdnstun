@@ -24,6 +24,7 @@ traceroute to 192.168.2.1 (192.168.2.1), 30 hops max, 60 byte packets
 ```bash
 # optional, add a persistent tun device
 sudo ip tuntap add dev tun-rdns mode tun
+# append 'multi_queue' if you want multithread
 
 # start rdnstun
 sudo ./rdnstun -4 192.168.2.10-192.168.2.1 -6 3000::f-3000::1 -6 route=3000:0:0:1::/64,3000:0:0:1::f-3000:0:0:1::1
@@ -38,6 +39,9 @@ ping 192.168.2.1
 traceroute 192.168.2.1
 ping 3000::1
 traceroute6 3000::1
+
+# cleanup
+sudo ip tuntap del dev tun-rdns mode tun
 ```
 
 

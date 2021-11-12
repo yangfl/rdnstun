@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <threads.h>
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <netinet/icmp6.h>
@@ -34,7 +35,7 @@ static void shutdown_rdnstun (int sig) {
 
 static int cread (int fd, void *buf, size_t count){
   int nread = read(fd, buf, count);
-  should (nread > 0) otherwise {
+  should (nread >= 0) otherwise {
     perror("read");
   }
   return nread;
@@ -74,9 +75,9 @@ static void rdnstun (
     // data from tun/tap: read it
     unsigned char packet[IP_MAXPACKET];
     int pkt_receive_len = cread(tunfd, packet, sizeof(packet));
-    break_if_fail (pkt_receive_len > 0);
+    continue_if_fail (pkt_receive_len > 0);
     LOGGER(RDNSTUN_NAME, LOG_LEVEL_DEBUG,
-           "Read %d bytes from the interface", pkt_receive_len);
+           "Read %d bytes from fd %d", pkt_receive_len, tunfd);
 
     unsigned short pkt_send_len = pkt_receive_len;
     unsigned char ipver = ((struct ip *) packet)->ip_v;
@@ -126,10 +127,26 @@ fail_reply:
       int n_write = cwrite(tunfd, packet, pkt_send_len);
       if likely (n_write >= 0) {
         LOGGER(RDNSTUN_NAME, LOG_LEVEL_DEBUG,
-               "Write %d bytes to the interface", n_write);
+               "Write %d bytes to fd %d", n_write, tunfd);
       }
     }
   }
+}
+
+
+struct RDnsTunArg {
+  int tunfd;
+  const struct HostChain *v4_chains;
+  const struct HostChain *v6_chains;
+  volatile bool *shutdown;
+};
+
+
+static int start_rdnstun (void *arg) {
+  struct RDnsTunArg *rdnstun_arg = arg;
+  rdnstun(rdnstun_arg->tunfd, rdnstun_arg->v4_chains,
+                 rdnstun_arg->v6_chains, rdnstun_arg->shutdown);
+  return 0;
 }
 
 
@@ -151,6 +168,9 @@ static void usage (const char *progname) {
 "  -6 <v6addr_chain>       IPv6 address chain\n"
 "  -E <step>/<prefix>,<n>  duplicates the previous chain by <n>, with interval of\n"
 "                          <step>*2^<prefix>. All route and hosts will be shifted\n"
+"  -T <nthread>            run <nthread> threads (0 for `nproc')\n"
+"                          If <iface> is a persist tun device, it must be\n"
+"                          created using multi_queue.\n"
 "  -D                      daemonize (run in background)\n"
 "  -d                      enables debugging messages\n"
 "  -h                      prints this help text\n", stderr);
@@ -168,12 +188,13 @@ int main (int argc, char *argv[]) {
   unsigned int v4_chains_len = 0;
   unsigned int v6_chains_len = 0;
   char if_name[IF_NAMESIZE] = RDNSTUN_IFACE_NAME;
+  int nthread = -1;
   bool background = false;
 
   // Parse command line options
   bool if_name_set = false;
   bool last_chain_v6 = false;
-  for (int option; (option = getopt(argc, argv, "-4:6:E:Ddh")) != -1;) {
+  for (int option; (option = getopt(argc, argv, "-4:6:E:T:Ddh")) != -1;) {
     int ret;
     switch (option) {
       case 1:
@@ -259,6 +280,18 @@ int main (int argc, char *argv[]) {
         }
         break;
       }
+      case 'T':
+        should (argtoi(optarg, &nthread, 0, 1024) == 0) otherwise {
+          fprintf(stderr, "error: number of threads not a positive number\n");
+          goto fail_arg;
+        }
+        if (nthread == 0) {
+          nthread = sysconf(_SC_NPROCESSORS_ONLN);
+          if (nthread <= 0) {
+            nthread = 1;
+          }
+        }
+        break;
       case 'D':
         background = true;
         break;
@@ -309,41 +342,106 @@ fail_arg:
     goto fail;
   }
   if (v4_chains != NULL) {
-    memset(v4_chains + v4_chains_len, 0, sizeof(struct HostChain));
-    HostChainArray_sort(v4_chains);
+    if (v4_chains_len == 0) {
+      free(v4_chains);
+      v4_chains = NULL;
+    } else {
+      memset(v4_chains + v4_chains_len, 0, sizeof(struct HostChain));
+      HostChainArray_sort(v4_chains);
+    }
   }
   if (v6_chains != NULL) {
-    memset(v6_chains + v6_chains_len, 0, sizeof(struct HostChain));
-    HostChainArray_sort(v6_chains);
-  }
-
-  // initialize tun/tap interface
-  int tunfd = tun_alloc(if_name, IFF_TUN);
-  goto_if_fail (tunfd >= 0) fail;
-  LOGGER(RDNSTUN_NAME, LOG_LEVEL_INFO,
-         "Successfully connected to interface %s", if_name);
-  should (ifup(if_name) >= 0) otherwise {
-    LOGGER(RDNSTUN_NAME, LOG_LEVEL_MESSAGE,
-           "Failed to bring up interface %s", if_name);
-  }
-
-  // daemonize
-  if (background) {
-    should (daemon(0, 0) == 0) otherwise {
-      perror("daemon");
-      goto fail;
+    if (v6_chains_len == 0) {
+      free(v6_chains);
+      v4_chains = NULL;
+    } else {
+      memset(v6_chains + v6_chains_len, 0, sizeof(struct HostChain));
+      HostChainArray_sort(v6_chains);
     }
   }
 
-  // main loop
-  if (!background) {
-    LOGGER(RDNSTUN_NAME, LOG_LEVEL_MESSAGE, "Start " RDNSTUN_NAME);
+  {
+    // initialize tun/tap interface
+    bool multithread = nthread > 0;
+    nthread = max(nthread, 1);
+    int tunfds[nthread];
+    if (!multithread) {
+      tunfds[0] = tun_alloc(if_name, IFF_TUN);
+      goto_if_fail (tunfds[0] >= 0) fail;
+    } else {
+      switch (tuns_alloc(if_name, IFF_TUN, nthread, tunfds)) {
+        case 0:
+          break;
+        case 2:
+          fprintf(stderr, "error: device type mismatch\n");
+          goto fail;
+        case 3:
+          fprintf(stderr, "error: device does not support multiqueue, but "
+                          "multithread required\n");
+          goto fail;
+        default:
+          goto fail;
+      }
+    }
+    LOGGER(RDNSTUN_NAME, LOG_LEVEL_INFO,
+          "Successfully connected to interface %s", if_name);
+    should (ifup(if_name) >= 0) otherwise {
+      LOGGER(RDNSTUN_NAME, LOG_LEVEL_MESSAGE,
+            "Failed to bring up interface %s", if_name);
+    }
+
+    // daemonize
+    if (background) {
+      should (daemon(0, 0) == 0) otherwise {
+        perror("daemon");
+        goto fail_tun;
+      }
+    }
+
+    // main loop
+    if (!background && logger_would_log(LOG_LEVEL_MESSAGE)) {
+      LOGGER_START(RDNSTUN_NAME, LOG_LEVEL_MESSAGE, "Start " RDNSTUN_NAME);
+      if (multithread) {
+        logger_continue(LOG_LEVEL_MESSAGE, " with %d thread(s)", nthread);
+      }
+      logger_end(LOG_LEVEL_MESSAGE);
+    }
+    signal(SIGINT, shutdown_rdnstun);
+    if (nthread == 1) {
+      rdnstun(tunfds[0], v4_chains, v6_chains, &rdnstun_shutdown);
+      close(tunfds[0]);
+    } else {
+      thrd_t threads[nthread];
+      struct RDnsTunArg args[nthread];
+      for (int i = 0; i < nthread; i++) {
+        args[i].tunfd = tunfds[i];
+        args[i].v4_chains = v4_chains;
+        args[i].v6_chains = v6_chains;
+        args[i].shutdown = &rdnstun_shutdown;
+        should (thrd_create(
+            &threads[i], start_rdnstun, args + i) == 0) otherwise {
+          perror("thrd_create");
+          rdnstun_shutdown = true;
+          for (i--; i >= 0; i--) {
+            thrd_join(threads[i], NULL);
+          }
+          goto fail_tun;
+        }
+      }
+      for (int i = 0; i < nthread; i++) {
+        thrd_join(threads[i], NULL);
+        close(tunfds[i]);
+      }
+    }
+
+    if (0) {
+fail_tun:
+      for (int i = 0; i < nthread; i++) {
+        close(tunfds[i]);
+      }
+      goto fail;
+    }
   }
-  signal(SIGINT, shutdown_rdnstun);
-  rdnstun(
-    tunfd, v4_chains_len != 0 ? v4_chains : NULL,
-    v6_chains_len != 0 ? v6_chains : NULL, &rdnstun_shutdown);
-  close(tunfd);
 
   int ret;
 end:
