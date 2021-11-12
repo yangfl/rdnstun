@@ -53,7 +53,7 @@ int FakeHost_reply (
   unsigned char receive_ttl = pkt->ip.ip_ttl - ttl;
   bool dst_is_target = self->addr.s_addr == pkt->ip.ip_dst.s_addr;
 
-  if (LogLevel_should_log(LOG_LEVEL_DEBUG)) {
+  if (logger_would_log(LOG_LEVEL_DEBUG)) {
     char s_src_addr[INET_ADDRSTRLEN];
     char s_dst_addr[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &pkt->ip.ip_src, s_src_addr, sizeof(s_src_addr));
@@ -160,7 +160,7 @@ int FakeHost6_reply (
   unsigned char receive_ttl = pkt->ip.ip6_hlim - ttl;
   bool dst_is_target = IN6_ARE_ADDR_EQUAL(&self->addr, &pkt->ip.ip6_dst);
 
-  if (LogLevel_should_log(LOG_LEVEL_DEBUG)) {
+  if (logger_would_log(LOG_LEVEL_DEBUG)) {
     char s_src_addr[INET6_ADDRSTRLEN];
     char s_dst_addr[INET6_ADDRSTRLEN];
     inet_ntop(AF_INET6, &pkt->ip.ip6_src, s_src_addr, sizeof(s_src_addr));

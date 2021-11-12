@@ -71,7 +71,7 @@ int HostChain_shift (
   const int af = self->v6 ? AF_INET6 : AF_INET;
   const unsigned int struct_size =
     self->v6 ? sizeof(struct FakeHost6) : sizeof(struct FakeHost);
-  return_if_fail (inet_shift(af, self->network, offset, prefix) == 0) 14;
+  return_if_fail (inet_shift(af, self->network, offset, prefix) == 0) 16;
   for (unsigned int i = 0;
        !BaseFakeHost_isnull(HostChain_AT(self, i), self->v6); i++) {
     inet_shift(af, &HostChain_AT(self, i)->addr, offset, prefix);
@@ -83,33 +83,33 @@ int HostChain_shift (
 const char *HostChain_strerror (int errnum) {
   switch (errnum) {
     case 1:
-      return "address not in presentation format";
-    case 2:
-      return "address range too large";
-    case 3:
-      return "address chain longer than current TTL";
-    case 4:
-      return "route not in presentation format";
-    case 5:
-      return "TTL not a number or out of range (make chain unreachable)";
-    case 6:
-      return "MTU not a number or out of range";
-    case 7:
-      return "route can only be specified once";
-    case 8:
-      return "TTL can only become smaller";
-    case 9:
-      return "MTU can only become smaller";
-    case 10:
       return "chain is empty";
-    case 11:
-      return "No host to reply";
-    case 12:
-      return "TTL is zero";
-    case 13:
-      return "Host TTL too small";
-    case 14:
+    case 2:
+      return "address not in presentation format";
+    case 3:
+      return "address range too large";
+    case 4:
+      return "address chain longer than current TTL";
+    case 5:
+      return "Unknown token";
+    case 6:
+      return "Token without a value";
+    case 7:
+      return "TTL not a number or out of range (make chain unreachable)";
+    case 8:
+      return "MTU not a number or out of range ()";
+    case 9:
+      return "route can only be specified once";
+    case 10:
+      return "route not in presentation format";
+    case 16:
       return "'prefix' must be less or equal than the network prefix";
+    case 17:
+      return "No host to reply";
+    case 18:
+      return "TTL is zero";
+    case 19:
+      return "Host TTL too small";
     default:
       return Struct_strerror(errnum);
   }
@@ -154,46 +154,49 @@ int HostChain_init (
   for (char *saved_comma, *token = strtok_r(s_, ",", &saved_comma);
        token != NULL;
        token = strtok_r(NULL, ",", &saved_comma)) {
-#define stracmp(s, l) strncmp(s, l, strlen(l))
-    if (stracmp(token, "ttl=") == 0) {
-      token += strlen("ttl=");
-      int new_ttl;
-      test_goto (argtoi(token, &new_ttl, i + 1, MAXTTL) == 0, 5) fail;
-      ttl = new_ttl;
-    } else if (stracmp(token, "mtu=") == 0) {
-      token += strlen("mtu=");
-      int new_mtu;
-      test_goto (argtoi(
-        token, &new_mtu, v6 ? 1280 : 576, mtu == 0 ? IP_MAXPACKET : mtu
-      ) == 0, 6) fail;
-      mtu = new_mtu;
-    } else if (stracmp(token, "route=") == 0) {
-      test_goto (!route_set, 7) fail;
-      route_set = true;
-      // save prefix len
-      char *network_end = strchr(token, '/');
-      test_goto (network_end != NULL, 4) fail;
-      *network_end = '\0';
-      // network
-      token += strlen("route=");
-      test_goto (inet_pton(af, token, self->network) == 1, 4) fail;
-      // prefix len
-      int prefix;
-      test_goto (
-        argtoi(network_end + 1, &prefix, 0, v6 ? 128 : 32) == 0, 4) fail;
-      self->prefix = prefix;
-      // verify cidr
-      test_goto (
-        inet_isnetwork(af, self->network, self->prefix) == 1, 4) fail;
+    char *value = strchr(token, '=');
+    if (value != NULL) {
+      *value = '\0';
+      value++;
+      test_goto (*value != '\0' && *value != ',', 6) fail;
+      if (strcmp(token, "ttl") == 0) {
+        int new_ttl;
+        test_goto (argtoi(value, &new_ttl, i + 1, MAXTTL) == 0, 7) fail;
+        ttl = new_ttl;
+      } else if (strcmp(token, "mtu") == 0) {
+        int new_mtu;
+        test_goto (argtoi(
+          value, &new_mtu, v6 ? 1280 : 576, mtu == 0 ? IP_MAXPACKET : mtu
+        ) == 0, 8) fail;
+        mtu = new_mtu;
+      } else if (strcmp(token, "route") == 0) {
+        test_goto (!route_set, 9) fail;
+        route_set = true;
+        // save prefix len
+        char *network_end = strchr(value, '/');
+        test_goto (network_end != NULL, 10) fail;
+        *network_end = '\0';
+        // network
+        test_goto (inet_pton(af, value, self->network) == 1, 10) fail;
+        // prefix len
+        int prefix;
+        test_goto (
+          argtoi(network_end + 1, &prefix, 0, v6 ? 128 : 32) == 0, 10) fail;
+        self->prefix = prefix;
+        // verify cidr
+        test_goto (
+          inet_isnetwork(af, self->network, self->prefix) == 1, 10) fail;
 
-      if (LogLevel_should_log(LOG_LEVEL_DEBUG)) {
-        if (network_end != NULL) {
+        if (logger_would_log(LOG_LEVEL_DEBUG)) {
           *network_end = '/';
+          char s_network[INET6_ADDRSTRLEN];
+          inet_ntop(af, self->network, s_network, sizeof(s_network));
+          LOGGER(RDNSTUN_NAME, LOG_LEVEL_DEBUG,
+                "Parsed route '%s': %s/%d", value, s_network, self->prefix);
         }
-        char s_network[INET6_ADDRSTRLEN];
-        inet_ntop(af, self->network, s_network, sizeof(s_network));
-        LOGGER(RDNSTUN_NAME, LOG_LEVEL_DEBUG,
-               "Parsed route '%s': %s/%d", token, s_network, self->prefix);
+      } else {
+        ret = 5;
+        goto fail;
       }
     } else {
       if (i == 0) {
@@ -204,7 +207,7 @@ int HostChain_init (
           mtu = 1500;
         }
       } else {
-        test_goto (i < ttl, 3) fail;
+        test_goto (i < ttl, 4) fail;
       }
       unsigned int old_i = i;
 
@@ -215,7 +218,7 @@ int HostChain_init (
 
       // parse first component
       struct FakeHost *host = HostChain_AT(self, i);
-      test_goto (inet_pton(af, token, &host->addr) == 1, 1) fail;
+      test_goto (inet_pton(af, token, &host->addr) == 1, 2) fail;
       host->ttl = ttl;
       host->mtu = mtu;
       i++;
@@ -223,7 +226,7 @@ int HostChain_init (
       // parse second component
       if (next_dash != NULL) {
         unsigned char addr_end[sizeof(struct in6_addr)];
-        test_goto (inet_pton(af, next_dash + 1, addr_end) == 1, 1) fail;
+        test_goto (inet_pton(af, next_dash + 1, addr_end) == 1, 2) fail;
 
         if likely (memcmp(
             &host->addr, addr_end,
@@ -239,7 +242,7 @@ int HostChain_init (
             test_goto (memcmp(
               ((struct FakeHost6 *) host)->addr.s6_addr,
               ((struct in6_addr *) addr_end)->s6_addr,
-              prefix_len) == 0, 2) fail;
+              prefix_len) == 0, 3) fail;
             memcpy(prefix, ((struct in6_addr *) addr_end)->s6_addr,
                    sizeof(prefix));
             start = ntohl(*((in_addr_t *) (
@@ -254,7 +257,7 @@ int HostChain_init (
           i--;
           int step = stop > start ? 1 : -1;
           unsigned int n_addr = (stop - start) * step + 1;
-          test_goto (i + n_addr < MAXTTL, 2) fail;
+          test_goto (i + n_addr < MAXTTL, 3) fail;
           for (unsigned int j = 1; j < n_addr; j++) {
             struct FakeHost *host_j = HostChain_AT(self, i + j);
             if (v6) {
@@ -273,7 +276,7 @@ int HostChain_init (
         }
       }
 
-      if (LogLevel_should_log(LOG_LEVEL_DEBUG)) {
+      if (logger_would_log(LOG_LEVEL_DEBUG)) {
         if (next_dash != NULL) {
           *next_dash = '-';
         }
@@ -291,7 +294,7 @@ int HostChain_init (
       }
     }
   }
-  test_goto (i != 0, 10) fail;
+  test_goto (i != 0, 1) fail;
 
   free(s_);
   // resize buf and finish with 0
@@ -326,14 +329,14 @@ int HostChain4Array_reply (
     const struct HostChain * restrict self,
     void *packet, unsigned short *len) {
   const struct ip *receive = packet;
-  return_if_fail (receive->ip_ttl > 0) 12;
+  return_if_fail (receive->ip_ttl > 0) 18;
   unsigned char index;
   const struct FakeHost *host = HostChainArray_find(
     self, &receive->ip_dst, receive->ip_ttl, &index);
-  return_if_fail (host != NULL) 11;
+  return_if_fail (host != NULL) 17;
   int ret = FakeHost_reply(host, index, packet, len);
   if (ret > 0) {
-    ret += 12;
+    ret += 18;
   }
   return ret;
 }
@@ -343,14 +346,14 @@ int HostChain6Array_reply (
     const struct HostChain * restrict self,
     void *packet, unsigned short *len) {
   const struct ip6_hdr *receive = packet;
-  return_if_fail (receive->ip6_hlim > 0) 12;
+  return_if_fail (receive->ip6_hlim > 0) 18;
   unsigned char index;
   const struct FakeHost6 *host = HostChainArray_find(
     self, &receive->ip6_dst, receive->ip6_hlim, &index);
-  return_if_fail (host != NULL) 11;
+  return_if_fail (host != NULL) 17;
   int ret = FakeHost6_reply(host, index, packet, len);
   if (ret > 0) {
-    ret += 12;
+    ret += 18;
   }
   return ret;
 }

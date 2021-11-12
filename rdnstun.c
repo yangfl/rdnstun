@@ -103,14 +103,14 @@ undefined_ipver:
         if (0) {
 fail_reply:
           switch (ret) {
-            case 11:
+            case 17:
               LOGGER(RDNSTUN_NAME, LOG_LEVEL_DEBUG, "No host to reply");
               break;
-            case 12:
+            case 18:
               LOGGER(RDNSTUN_NAME, LOG_LEVEL_WARNING,
                      "Received packet with TTL 0");
               break;
-            case 13:
+            case 19:
               LOGGER(RDNSTUN_NAME, LOG_LEVEL_WARNING,
                      "Host TTL too small, this is a bug");
               break;
@@ -244,7 +244,7 @@ int main (int argc, char *argv[]) {
           goto_nonzero (HostChain_copy(self, base)) fail_duplicate;
           HostChain_shift(self, step * i, prefix);
 
-          if (LogLevel_should_log(LOG_LEVEL_DEBUG)) {
+          if (logger_would_log(LOG_LEVEL_DEBUG)) {
             char s_network[INET6_ADDRSTRLEN];
             inet_ntop(af, self->network, s_network, sizeof(s_network));
             LOGGER(RDNSTUN_NAME, LOG_LEVEL_DEBUG, "Duplicate # %d chain: %s/%d",
@@ -263,7 +263,7 @@ int main (int argc, char *argv[]) {
         background = true;
         break;
       case 'd':
-        effective_log_level = LOG_LEVEL_DEBUG;
+        logger_set_level(LOG_LEVEL_DEBUG);
         break;
       case 'h':
         usage(argv[0]);
