@@ -12,10 +12,6 @@
 #include "log.h"
 
 
-extern inline int logger_set_level (int lvl);
-extern inline bool logger_would_log (int lvl);
-
-
 int logger_level = LOG_LEVEL_MESSAGE;
 static FILE *log_streams[2] = {0};
 

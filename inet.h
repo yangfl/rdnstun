@@ -5,7 +5,7 @@
 #include <stdint.h>
 
 
-inline uint16_t inet_cksum_finish (uint32_t sum) {
+static inline uint16_t inet_cksum_finish (uint32_t sum) {
   // Fold 32-bit sum to 16 bits
   sum = (sum >> 16) + (sum & 0xffff);  /* add high-16 to low-16 */
   sum += (sum >> 16);  /* add carry */

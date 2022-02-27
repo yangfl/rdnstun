@@ -7,17 +7,17 @@
 
 
 __attribute__((nonnull, access(read_only, 1)))
-inline int argtoi (const char s[], int *res, int min, int max) {
+static inline int argtoi (const char s[], int *res, int min, int max) {
   char *s_end;
   *res = strtol(s, &s_end, 10);
   return !isdigit(*s_end) && min <= *res && *res <= max ? 0 : 1;
 }
 
 __attribute__((nonnull))
-inline void *irealloc (void **ptr, size_t size) {
-  void *ret = realloc(*ptr, size);
+static inline void *irealloc (void *ptr, size_t size) {
+  void *ret = realloc(*(void **) ptr, size);
   if (size > 0 && ret != NULL) {
-    *ptr = ret;
+    *(void **) ptr = ret;
   }
   return ret;
 }

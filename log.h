@@ -23,13 +23,13 @@ const char *LogLevel_tostring_c (int self);
 
 extern int logger_level;
 
-inline int logger_set_level (int lvl) {
+static inline int logger_set_level (int lvl) {
   logger_level = lvl;
   return lvl;
 }
 
 __attribute__((const, warn_unused_result))
-inline bool logger_would_log (int lvl) {
+static inline bool logger_would_log (int lvl) {
   return lvl >= logger_level;
 }
 

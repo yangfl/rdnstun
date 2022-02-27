@@ -211,7 +211,7 @@ int main (int argc, char *argv[]) {
         break;
       case '4': {
         test_goto (irealloc(
-          (void **) &v4_chains, sizeof(struct HostChain) * (v4_chains_len + 2)
+          &v4_chains, sizeof(struct HostChain) * (v4_chains_len + 2)
         ) != NULL, -1) fail_chain;
         goto_nonzero (
           HostChain_init(v4_chains + v4_chains_len, optarg, false)) fail_chain;
@@ -221,7 +221,7 @@ int main (int argc, char *argv[]) {
       }
       case '6': {
         test_goto (irealloc(
-          (void **) &v6_chains, sizeof(struct HostChain) * (v6_chains_len + 2)
+          &v6_chains, sizeof(struct HostChain) * (v6_chains_len + 2)
         ) != NULL, -1) fail_chain;
         goto_nonzero (
           HostChain_init(v6_chains + v6_chains_len, optarg, true)) fail_chain;

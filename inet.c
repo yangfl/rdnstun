@@ -10,9 +10,6 @@
 #include "inet.h"
 
 
-extern uint16_t inet_cksum_finish (uint32_t sum);
-
-
 uint32_t inet_cksum_continue (uint32_t sum, const void *buf, size_t count) {
   const uint16_t *addr = buf;
 
