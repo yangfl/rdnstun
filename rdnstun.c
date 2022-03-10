@@ -28,7 +28,7 @@ volatile bool rdnstun_shutdown = false;
 
 static void shutdown_rdnstun (int sig) {
   (void) sig;
-  LOGGER(RDNSTUN_NAME, LOG_LEVEL_INFO, "Shutting down " RDNSTUN_NAME);
+  LOG(LOG_LEVEL_INFO, "Shutting down " RDNSTUN_NAME);
   rdnstun_shutdown = true;
 }
 
@@ -51,33 +51,31 @@ static int cwrite (int fd, const void *buf, size_t count){
 }
 
 
-static void rdnstun (
+static int rdnstun (
     int tunfd, const struct HostChain *v4_chains,
     const struct HostChain *v6_chains, volatile bool *shutdown) {
   struct pollfd fds[] = {
     {.fd = tunfd, .events = POLLIN},
   };
 
-  for (int pollres; !*shutdown;) {
-    pollres = poll(fds, arraysize(fds), RDNSTUN_SLEEP_TIME * 1000);
-    should (pollres >= 0) otherwise {
-      if (*shutdown) {
-        break;
-      }
-      perror("poll");
-      continue;
-    }
-    if (pollres == 0) {
-      continue;
-    }
+  while (1) {
+    int pollres = poll(fds, arraysize(fds), RDNSTUN_SLEEP_TIME * 1000);
+    break_if_fail (!*shutdown);
 
-    logger_end(LOG_LEVEL_DEBUG);
+    should (pollres >= 0) otherwise {
+      LOG_PERROR(LOG_LEVEL_WARNING, "poll()");
+      continue;
+    }
+    continue_if_not (pollres > 0);
+
+    if (LOG_WOULD_LOG(LOG_LEVEL_DEBUG)) {
+      puts("");
+    }
     // data from tun/tap: read it
     unsigned char packet[IP_MAXPACKET];
     int pkt_receive_len = cread(tunfd, packet, sizeof(packet));
     continue_if_fail (pkt_receive_len > 0);
-    LOGGER(RDNSTUN_NAME, LOG_LEVEL_DEBUG,
-           "Read %d bytes from fd %d", pkt_receive_len, tunfd);
+    LOG(LOG_LEVEL_DEBUG, "Read %d bytes from fd %d", pkt_receive_len, tunfd);
 
     unsigned short pkt_send_len = pkt_receive_len;
     unsigned char ipver = ((struct ip *) packet)->ip_v;
@@ -94,30 +92,27 @@ static void rdnstun (
           v6_chains, packet, &pkt_send_len)) fail_reply;
         break;
       default:
-        LOGGER(RDNSTUN_NAME, LOG_LEVEL_DEBUG, "Unknown IP version %d", ipver);
+        LOG(LOG_LEVEL_DEBUG, "Unknown IP version %d", ipver);
         if (0) {
 undefined_ipver:
-          LOGGER(RDNSTUN_NAME, LOG_LEVEL_DEBUG,
-                 "Received IPv%d packet but no IPv%d chains defined",
-                 ipver, ipver);
+          LOG(LOG_LEVEL_DEBUG,
+              "Received IPv%d packet but no IPv%d chains defined",
+              ipver, ipver);
         }
         if (0) {
 fail_reply:
           switch (ret) {
             case 17:
-              LOGGER(RDNSTUN_NAME, LOG_LEVEL_DEBUG, "No host to reply");
+              LOG(LOG_LEVEL_DEBUG, "No host to reply");
               break;
             case 18:
-              LOGGER(RDNSTUN_NAME, LOG_LEVEL_WARNING,
-                     "Received packet with TTL 0");
+              LOG(LOG_LEVEL_WARNING, "Received packet with TTL 0");
               break;
             case 19:
-              LOGGER(RDNSTUN_NAME, LOG_LEVEL_WARNING,
-                     "Host TTL too small, this is a bug");
+              LOG(LOG_LEVEL_WARNING, "Host TTL too small, this is a bug");
               break;
             default:
-              LOGGER(RDNSTUN_NAME, LOG_LEVEL_WARNING, "Unknown error number %d",
-                     ret);
+              LOG(LOG_LEVEL_WARNING, "Unknown error number %d", ret);
           }
         }
         continue;
@@ -126,11 +121,12 @@ fail_reply:
     if likely (pkt_send_len > 0) {
       int n_write = cwrite(tunfd, packet, pkt_send_len);
       if likely (n_write >= 0) {
-        LOGGER(RDNSTUN_NAME, LOG_LEVEL_DEBUG,
-               "Write %d bytes to fd %d", n_write, tunfd);
+        LOG(LOG_LEVEL_DEBUG, "Write %d bytes to fd %d", n_write, tunfd);
       }
     }
   }
+
+  return 0;
 }
 
 
@@ -144,9 +140,8 @@ struct RDnsTunArg {
 
 static int start_rdnstun (void *arg) {
   struct RDnsTunArg *rdnstun_arg = arg;
-  rdnstun(rdnstun_arg->tunfd, rdnstun_arg->v4_chains,
+  return rdnstun(rdnstun_arg->tunfd, rdnstun_arg->v4_chains,
                  rdnstun_arg->v6_chains, rdnstun_arg->shutdown);
-  return 0;
 }
 
 
@@ -182,6 +177,13 @@ int main (int argc, char *argv[]) {
     usage(argv[0]);
     return EXIT_SUCCESS;
   }
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wanalyzer-write-to-const"
+  LOGGER_SET_ATTRIBUTE(domain, RDNSTUN_NAME);
+  LOGGER_SET_ATTRIBUTE(backtrace, true);
+  LOGGER_SET_ATTRIBUTE(debug, true);
+#pragma GCC diagnostic pop
+  diagnose_sigsegv(true, 0, NULL);
 
   struct HostChain *v4_chains = NULL;
   struct HostChain *v6_chains = NULL;
@@ -265,11 +267,11 @@ int main (int argc, char *argv[]) {
           goto_nonzero (HostChain_copy(self, base)) fail_duplicate;
           HostChain_shift(self, step * i, prefix);
 
-          if (logger_would_log(LOG_LEVEL_DEBUG)) {
+          if (LOG_WOULD_LOG(LOG_LEVEL_DEBUG)) {
             char s_network[INET6_ADDRSTRLEN];
             inet_ntop(af, self->network, s_network, sizeof(s_network));
-            LOGGER(RDNSTUN_NAME, LOG_LEVEL_DEBUG, "Duplicate # %d chain: %s/%d",
-                   i, s_network, self->prefix);
+            LOG(LOG_LEVEL_DEBUG, "Duplicate # %d chain: %s/%d",
+                i, s_network, self->prefix);
           }
 
           if (last_chain_v6) {
@@ -296,7 +298,7 @@ int main (int argc, char *argv[]) {
         background = true;
         break;
       case 'd':
-        logger_set_level(LOG_LEVEL_DEBUG);
+        LOGGER_SET_ATTRIBUTE(level, LOG_LEVEL_DEBUG);
         break;
       case 'h':
         usage(argv[0]);
@@ -383,11 +385,9 @@ fail_arg:
           goto fail;
       }
     }
-    LOGGER(RDNSTUN_NAME, LOG_LEVEL_INFO,
-          "Successfully connected to interface %s", if_name);
+    LOG(LOG_LEVEL_INFO, "Successfully connected to interface %s", if_name);
     should (ifup(if_name) >= 0) otherwise {
-      LOGGER(RDNSTUN_NAME, LOG_LEVEL_MESSAGE,
-            "Failed to bring up interface %s", if_name);
+      LOG(LOG_LEVEL_NOTICE, "Failed to bring up interface %s", if_name);
     }
 
     // daemonize
@@ -399,12 +399,13 @@ fail_arg:
     }
 
     // main loop
-    if (!background && logger_would_log(LOG_LEVEL_MESSAGE)) {
-      LOGGER_START(RDNSTUN_NAME, LOG_LEVEL_MESSAGE, "Start " RDNSTUN_NAME);
-      if (multithread) {
-        logger_continue(LOG_LEVEL_MESSAGE, " with %d thread(s)", nthread);
+    if (!background) {
+      LOGEVENT (LOG_LEVEL_NOTICE) {
+        LOGEVENT_PUTS("Start " RDNSTUN_NAME);
+        if (multithread) {
+          LOGEVENT_LOG(" with %d thread(s)", nthread);
+        }
       }
-      logger_end(LOG_LEVEL_MESSAGE);
     }
     signal(SIGINT, shutdown_rdnstun);
     if (nthread == 1) {

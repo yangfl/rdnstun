@@ -1,194 +1,395 @@
 #include <errno.h>
+#include <execinfo.h>
 #include <locale.h>
+#include <poll.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <termios.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "macro.h"
 #include "color.h"
+#define __LOG_BUILD
 #include "log.h"
 
 
-int logger_level = LOG_LEVEL_MESSAGE;
-static FILE *log_streams[2] = {0};
+extern struct Logger app_logger;
 
 
-int LogLevel_tocolor (int self) {
-  switch (self) {
-    case LOG_LEVEL_INFO:
-      return COLOR_WHITE;
-    case LOG_LEVEL_MESSAGE:
-      return COLOR_GREEN;
-    case LOG_LEVEL_WARNING:
-      return COLOR_YELLOW;
-    case LOG_LEVEL_CRITICAL:
-      return COLOR_YELLOW;
-    case LOG_LEVEL_ERROR:
-      return COLOR_RED;
-    default:
-      return self <= 0 ? COLOR_BLUE : COLOR_WHITE;
+extern inline int LogLevel_clamp (int level);
+
+extern inline bool Logger_would_log (
+  const struct Logger * __restrict self, int level);
+
+extern inline int LoggerEvent_log_va_func (
+  const struct LoggerEvent * __restrict self,
+  const char * __restrict format, va_list ap);
+extern inline int LoggerEvent_write_func (
+  const struct LoggerEvent * __restrict self,
+  const char * __restrict str, size_t len);
+extern inline int LoggerEvent_puts_func (
+  const struct LoggerEvent * __restrict self, const char * __restrict str);
+extern inline int LoggerEvent_init_func (
+  struct LoggerEvent * __restrict self,
+  const struct Logger * __restrict logger, int level,
+  const char * __restrict file, int line, const char * __restrict func);
+
+extern inline int Logger_log_va_func (
+  const struct Logger * __restrict self, int level,
+  const char * __restrict file, int line, const char * __restrict func,
+  const char * __restrict format, va_list ap);
+
+
+#define WRITE(fd, str) ((void) (write(fd, str, sizeof(str) - 1) == sizeof(str) - 1))
+
+
+void print_backtrace (int fd, int skip, bool with_header) {
+  void *symbols[64];
+  register const int symbols_size = arraysize(symbols);
+
+  // skip itself
+  skip++;
+  if unlikely (skip >= symbols_size) {
+    WRITE(fd, "(too many frames skipped)\n");
+    return;
+  }
+
+  // get backtrace
+  int size = backtrace(symbols, symbols_size);
+  should (size > 0) otherwise {
+    WRITE(fd, "(no available backtrace)\n");
+    return;
+  }
+
+  // write header
+  if (with_header) {
+    WRITE(fd, "Backtrace:\n");
+  }
+
+  int skipped = size;
+  // skip libc init
+  if likely (size < symbols_size) {
+    skipped -= 2;
+  }
+  // skip topmost frame
+  skipped -= skip;
+  if likely (skipped > 0) {
+    backtrace_symbols_fd(symbols + skip, skipped, fd);
+  }
+
+  // detect if all frames are printed
+  if (size == symbols_size) {
+    WRITE(fd, "...and possibly more\n");
   }
 }
 
 
-const char *LogLevel_tostring_c (int self) {
-  switch (self) {
-    case LOG_LEVEL_INFO:
-      return "INFO";
-    case LOG_LEVEL_MESSAGE:
-      return "MESSAGE";
-    case LOG_LEVEL_WARNING:
-      return "WARNING";
-    case LOG_LEVEL_CRITICAL:
-      return "CRITICAL";
-    case LOG_LEVEL_ERROR:
-      return "ERROR";
-    default:
-      return self <= 0 ? "DEBUG" : "UNKNOWN";
+static bool wait_debugger (void) {
+  // attached variable
+  volatile bool attached = false;
+
+  // set non buffered
+  struct termios stdin_termios;
+  tcgetattr(STDIN_FILENO, &stdin_termios);
+  {
+    struct termios termios = stdin_termios;
+    termios.c_lflag &= ~(ICANON);
+    tcsetattr(STDIN_FILENO, TCSANOW, &termios);
+  }
+
+  // allow Ctrl-C to work
+  struct sigaction sigint_sa;
+  {
+    static const struct sigaction default_sa = {.sa_handler = SIG_DFL};
+    sigaction(SIGINT, &default_sa, &sigint_sa);
+  }
+
+  // wait
+  fprintf(stderr, "(%d) Start debugging? [y/N] ", getpid());
+  fflush(stderr);
+  struct pollfd pollfd = {.fd = STDIN_FILENO, .events = POLLIN};
+  for (int i = 0; i < 5; i++) {
+    goto_if (poll(&pollfd, 1, 1000) > 0) char_inputed;
+    fputc('.', stderr);
+    fflush(stderr);
+  }
+  tcsetattr(STDIN_FILENO, TCSANOW, &stdin_termios);
+  fputc('\n', stderr);
+  return false;
+
+char_inputed:
+  tcsetattr(STDIN_FILENO, TCSANOW, &stdin_termios);
+  char input = getchar();
+  if (input != '\n') {
+    fputc('\n', stderr);
+  }
+  return_if_not (input == 'Y' || input == 'y') false;
+
+  // prepare being attached
+  if (!attached) {
+    fprintf(
+      stderr, "Wait debugger to attach... Enter 'fg' to restore program...\n");
+    raise(SIGSTOP);
+  }
+
+  // test if attached
+  return_if_not (attached) false;
+  fprintf(stderr, "Attached!\n");
+
+  // restore
+  sigaction(SIGINT, &sigint_sa, NULL);
+  return true;
+}
+
+
+static void exit_debug (int status, bool debug) {
+  if (debug) {
+    return_if (wait_debugger());
+    fprintf(stderr, "terminated\n");
+  }
+  _exit(status);
+}
+
+
+static bool sigsegv_debug;
+static int sigsegv_exit_status;
+
+
+static void sigsegv_handler (int sig) {
+  (void) sig;
+  LOGEVENT (LOG_LEVEL_CRITICAL) {
+    LOGEVENT_LOG("segmentation fault");
+    event.skip = 2;
+    event.exit_status = sigsegv_exit_status;
+    event.fatal = true;
+    event.backtrace = true;
+    event.debug = sigsegv_debug;
   }
 }
 
 
-FILE **logger_set_stream (FILE *out, FILE *err) {
-  if (out != NULL) {
-    log_streams[0] = out;
-  }
-  if (err != NULL) {
-    log_streams[1] = err;
-  }
-  return log_streams;
+int diagnose_sigsegv (
+    bool enable_debug, int exit_status, struct sigaction *oldact) {
+  sigsegv_debug = enable_debug;
+  sigsegv_exit_status = exit_status == 0 ? EXIT_FAILURE : exit_status;
+  static const struct sigaction sigsegv_sa = {.sa_handler = sigsegv_handler};
+  return sigaction(SIGSEGV, &sigsegv_sa, oldact);
 }
 
 
-FILE *logger_get_stream (int lvl) {
-  if unlikely (log_streams[0] == NULL) {
-    log_streams[0] = stdout;
-    log_streams[1] = stderr;
-  }
-  return log_streams[lvl == LOG_LEVEL_ERROR || lvl == LOG_LEVEL_CRITICAL];
-}
+/******************************************************************************
+ * LogLevel
+ ******************************************************************************/
+
+const char * const LogLevel_names[9] = {
+  "EMERGENCY", "ALERT", "CRITICAL", "ERROR",
+  "WARNING", "NOTICE", "INFO", "DEBUG", "VERBOSE",
+};
 
 
-#define LOGGER_BEGIN \
-  if unlikely (!logger_would_log(log_level)) { \
-    return; \
-  } \
-  __attribute__((unused)) FILE *stream = logger_get_stream(log_level)
+/******************************************************************************
+ * Logger
+ ******************************************************************************/
 
 
-void logger_start_va (
-    const char log_domain[], int log_level,
-    const char file[], int line, const char func[], const char format[],
-    va_list arg) {
-  LOGGER_BEGIN;
+static int logger_stream_std_begin (
+    struct LoggerEvent * __restrict self, const char * __restrict domain,
+    unsigned char level, const char * __restrict file, int line,
+    const char * __restrict func, const char * __restrict sgr) {
+  int ret;
+  int fd = self->stream->fd;
 
   time_t curtime = time(NULL);
   struct tm timeinfo;
   localtime_r(&curtime, &timeinfo);
   char timebuf[64];
   strftime(
-    timebuf, sizeof(timebuf),
-    COLOR_SEQ(COLOR_FOREGROUND_GREEN) "[%c]" RESET_SEQ " ", &timeinfo);
-  fputs(timebuf, stream);
+    timebuf, sizeof(timebuf), sgr != NULL ?
+      COLOR_SEQ(COLOR_FOREGROUND_GREEN) "[%b %e %T]" RESET_SEQ : "[%b %e %T]",
+    &timeinfo);
 
-  if likely (log_domain != NULL) {
-    fputs(log_domain, stream);
+  if unlikely (file == NULL) {
+    ret = dprintf(fd, "%s: ", timebuf);
+  } else if unlikely (func == NULL) {
+    ret = dprintf(fd, "%s (%s:%d): ", timebuf, file, line);
+  } else {
+    ret = dprintf(fd, "%s (%s:%d %s): ", timebuf, file, line, func);
   }
-  if likely (file != NULL) {
-    fprintf(stream, " (%s:%d)", file, line);
+
+  if likely (domain != NULL) {
+    ret += dprintf(fd, "%s-", domain);
   }
-  fputs(": ", stream);
-
-  if likely (func != NULL) {
-    fprintf(stream, "%s-", func);
+  const char *level_name = LogLevel_names[level];
+  if likely (sgr != NULL) {
+    ret += dprintf(fd, SGR_FORMAT_SEQ_START "%s" RESET_SEQ " **: ",
+                   sgr, level_name);
+  } else {
+    ret += dprintf(fd, "%s **: ", level_name);
   }
-  fprintf(stream, COLOR_SEQ_FORMAT "%s" RESET_SEQ " **: ",
-          COLOR_FOREGROUND + LogLevel_tocolor(log_level),
-          LogLevel_tostring_c(log_level));
 
-  vfprintf(stream, format, arg);
+  return ret;
 }
 
 
-void logger_start (
-    const char log_domain[], int log_level,
-    const char file[], int line, const char func[], const char format[], ...) {
-  LOGGER_BEGIN;
-
-  va_list arg;
-  va_start(arg, format);
-  logger_start_va(log_domain, log_level, file, line, func, format, arg);
-  va_end(arg);
+static int logger_stream_std_begin_nocolor (
+    struct LoggerEvent * __restrict self, const char * __restrict domain,
+    unsigned char level, const char * __restrict file, int line,
+    const char * __restrict func, const char * __restrict sgr) {
+  (void) sgr;
+  return logger_stream_std_begin(self, domain, level, file, line, func, NULL);
 }
 
 
-void logger_continue_va (
-    int log_level, const char format[], va_list arg) {
-  LOGGER_BEGIN;
+const struct LoggerStream logger_stream_stdout = {
+  .fd = STDOUT_FILENO, .begin = logger_stream_std_begin,
+};
 
-  vfprintf(stream, format, arg);
+const struct LoggerStream logger_stream_stderr = {
+  .fd = STDERR_FILENO, .begin = logger_stream_std_begin,
+};
+
+const struct LoggerStream logger_stream_stdout_nocolor = {
+  .fd = STDOUT_FILENO, .begin = logger_stream_std_begin_nocolor,
+};
+
+const struct LoggerStream logger_stream_stderr_nocolor = {
+  .fd = STDERR_FILENO, .begin = logger_stream_std_begin_nocolor,
+};
+
+struct Logger app_logger = {LOGGER_INIT};
+
+
+void Logger_set_stream (
+    struct Logger * __restrict self, int level,
+    const struct LoggerStream * __restrict stream) {
+  for (int i = 0; i <= LogLevel_clamp(level); i++) {
+    self->formatted[i].stream = stream;
+  }
 }
 
 
-void logger_continue (int log_level, const char format[], ...) {
-  LOGGER_BEGIN;
+/******************************************************************************
+ * LoggerEvent
+ ******************************************************************************/
 
-  va_list arg;
-  va_start(arg, format);
-  vfprintf(stream, format, arg);
-  va_end(arg);
+
+int LoggerEvent_log_func (
+    const struct LoggerEvent * __restrict self,
+    const char * __restrict format, ...) {
+  va_list ap;
+  va_start(ap, format);
+  int res = LoggerEvent_log_va_func(self, format, ap);
+  va_end(ap);
+  return res;
 }
 
 
-void logger_continue_literal (
-    int log_level, const char format[]) {
-  LOGGER_BEGIN;
+int LoggerEvent_perror_func (
+    const struct LoggerEvent * __restrict self, int errnum, bool colon) {
+  if unlikely (errnum == 0) {
+    errnum = errno;
+  }
 
-  fputs(format, stream);
-}
-
-
-void logger_end (int log_level) {
-  LOGGER_BEGIN;
-
-  fputc('\n', stream);
-}
-
-
-void logger (
-    const char log_domain[], int log_level,
-    const char file[], int line, const char func[], const char format[], ...) {
-  LOGGER_BEGIN;
-
-  va_list arg;
-  va_start(arg, format);
-  logger_start_va(log_domain, log_level, file, line, func, format, arg);
-  va_end(arg);
-
-  fputc('\n', stream);
-}
-
-
-void logger_perror (
-    const char log_domain[], int log_level,
-    const char file[], int line, const char func[], const char format[], ...) {
-  LOGGER_BEGIN;
-  int err = errno;
-
-  va_list arg;
-  va_start(arg, format);
-  logger_start_va(log_domain, log_level, file, line, func, format, arg);
-  va_end(arg);
+  int res = colon ? LoggerEvent_write_func(self, ": ", 2) : 0;
 
   static locale_t locale = 0;
   if unlikely (locale == 0) {
     locale = newlocale(LC_ALL_MASK, "", 0);
   }
-  fputs(": ", stream);
-  fputs(likely (locale != 0) ? strerror_l(err, locale) : strerror(err), stream);
+  if likely (locale != 0) {
+    res += LoggerEvent_puts_func(self, strerror_l(errnum, locale));
+  } else {
+    char buf[1024];
+    strerror_r(errnum, buf, sizeof(buf));
+    res += LoggerEvent_puts_func(self, buf);
+  }
 
-  fputc('\n', stream);
+  return res;
+}
+
+
+int LoggerEvent_backtrace_func (
+    const struct LoggerEvent * __restrict self, int skip) {
+  print_backtrace(self->stream->fd, self->skip + skip + 1, true);
+  return 0;
+}
+
+
+int LoggerEvent_destroy_func (const struct LoggerEvent * __restrict self) {
+  int res = write(self->stream->fd, "\n", 1);
+  if unlikely (self->backtrace) {
+    print_backtrace(self->stream->fd, self->skip + 1, true);
+  }
+  if unlikely (self->stream->end != NULL) {
+    res += self->stream->end(self);
+  }
+  if unlikely (self->fatal) {
+    exit_debug(
+      self->exit_status == 0 ? EXIT_FAILURE : self->exit_status, self->debug);
+  }
+  return res;
+}
+
+
+/******************************************************************************
+ * Log
+ ******************************************************************************/
+
+
+int Logger_log_func (
+    const struct Logger * __restrict self, int level,
+    const char * __restrict file, int line, const char * __restrict func,
+    const char * __restrict format, ...) {
+  return_if (!Logger_would_log(self, level)) -1;
+
+  struct LoggerEvent event;
+  int res = LoggerEvent_init_func(&event, self, level, file, line, func);
+  event.skip = 1;
+
+  LOGGER_EVENT_GUARD_BEGIN(&event);
+
+  va_list ap;
+  va_start(ap, format);
+  res += LoggerEvent_log_va_func(&event, format, ap);
+  va_end(ap);
+
+  LOGGER_EVENT_GUARD_END(&event);
+
+  res += LoggerEvent_destroy_inline(&event);
+  LOGGER_EVENT_GUARD_END(&event);
+  return res;
+}
+
+
+int Logger_log_perror_func (
+    const struct Logger * __restrict self, int level,
+    const char * __restrict file, int line, const char * __restrict func,
+    const char * __restrict format, ...) {
+  return_if (!Logger_would_log(self, level)) -1;
+  int errnum = errno;
+
+  struct LoggerEvent event;
+  int res = LoggerEvent_init_func(&event, self, level, file, line, func);
+  event.skip = 1;
+
+  LOGGER_EVENT_GUARD_BEGIN(&event);
+
+  va_list ap;
+  va_start(ap, format);
+  res += LoggerEvent_log_va_func(&event, format, ap);
+  va_end(ap);
+
+  res += LoggerEvent_perror_func(&event, errnum, true);
+
+  LOGGER_EVENT_GUARD_END(&event);
+
+  res += LoggerEvent_destroy_inline(&event);
+  LOGGER_EVENT_GUARD_END(&event);
+  return res;
 }

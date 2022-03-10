@@ -187,11 +187,11 @@ int HostChain_init (
         test_goto (
           inet_isnetwork(af, self->network, self->prefix) == 1, 10) fail;
 
-        if (logger_would_log(LOG_LEVEL_DEBUG)) {
+        if (LOG_WOULD_LOG(LOG_LEVEL_DEBUG)) {
           *network_end = '/';
           char s_network[INET6_ADDRSTRLEN];
           inet_ntop(af, self->network, s_network, sizeof(s_network));
-          LOGGER(RDNSTUN_NAME, LOG_LEVEL_DEBUG,
+          LOG(LOG_LEVEL_DEBUG,
                 "Parsed route '%s': %s/%d", value, s_network, self->prefix);
         }
       } else {
@@ -276,21 +276,19 @@ int HostChain_init (
         }
       }
 
-      if (logger_would_log(LOG_LEVEL_DEBUG)) {
+      LOGEVENT (LOG_LEVEL_DEBUG) {
         if (next_dash != NULL) {
           *next_dash = '-';
         }
-        LOGGER_START(RDNSTUN_NAME, LOG_LEVEL_DEBUG,
-                     "Parsed address '%s': ", token);
+        LOGEVENT_LOG("Parsed address '%s': ", token);
         for (unsigned int j = old_i; j < i; j++) {
           char s_addr[INET6_ADDRSTRLEN];
           inet_ntop( af, &HostChain_AT(self, j)->addr, s_addr, sizeof(s_addr));
           if (j != old_i) {
-            logger_continue_literal(LOG_LEVEL_DEBUG, ", ");
+            LOGEVENT_PUTS(", ");
           }
-          logger_continue_literal(LOG_LEVEL_DEBUG, s_addr);
+          LOGEVENT_PUTS(s_addr);
         }
-        logger_end(LOG_LEVEL_DEBUG);
       }
     }
   }
