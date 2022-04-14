@@ -20,6 +20,7 @@
 #include "log.h"
 #include "iface.h"
 #include "chain.h"
+#include "threadname.h"
 #include "rdnstun.h"
 
 
@@ -33,33 +34,15 @@ static void shutdown_rdnstun (int sig) {
 }
 
 
-static int cread (int fd, void *buf, size_t count){
-  int nread = read(fd, buf, count);
-  should (nread >= 0) otherwise {
-    perror("read");
-  }
-  return nread;
-}
-
-
-static int cwrite (int fd, const void *buf, size_t count){
-  int nwrite = write(fd, buf, count);
-  should (nwrite >= 0) otherwise {
-    perror("write");
-  }
-  return nwrite;
-}
-
-
 static int rdnstun (
     int tunfd, const struct HostChain *v4_chains,
     const struct HostChain *v6_chains, volatile bool *shutdown) {
-  struct pollfd fds[] = {
-    {.fd = tunfd, .events = POLLIN},
-  };
+  threadname_format("fd %d", tunfd);
+
+  struct pollfd pollfd = {.fd = tunfd, .events = POLLIN};
 
   while (1) {
-    int pollres = poll(fds, arraysize(fds), RDNSTUN_SLEEP_TIME * 1000);
+    int pollres = poll(&pollfd, 1, RDNSTUN_SLEEP_TIME * 1000);
     break_if_fail (!*shutdown);
 
     should (pollres >= 0) otherwise {
@@ -73,7 +56,10 @@ static int rdnstun (
     }
     // data from tun/tap: read it
     unsigned char packet[IP_MAXPACKET];
-    int pkt_receive_len = cread(tunfd, packet, sizeof(packet));
+    int pkt_receive_len = read(tunfd, packet, sizeof(packet));
+    should (pkt_receive_len >= 0) otherwise {
+      LOG_PERROR(LOG_LEVEL_WARNING, "read() failed");
+    }
     continue_if_fail (pkt_receive_len > 0);
     LOG(LOG_LEVEL_DEBUG, "Read %d bytes from fd %d", pkt_receive_len, tunfd);
 
@@ -119,8 +105,10 @@ fail_reply:
     }
     // write it into the tun/tap interface
     if likely (pkt_send_len > 0) {
-      int n_write = cwrite(tunfd, packet, pkt_send_len);
-      if likely (n_write >= 0) {
+      int n_write = write(tunfd, packet, pkt_send_len);
+      if unlikely (n_write < 0) {
+        LOG_PERROR(LOG_LEVEL_WARNING, "write() failed");
+      } else {
         LOG(LOG_LEVEL_DEBUG, "Write %d bytes to fd %d", n_write, tunfd);
       }
     }
@@ -409,7 +397,10 @@ fail_arg:
     }
     signal(SIGINT, shutdown_rdnstun);
     if (nthread == 1) {
+      char name[THREADNAME_SIZE];
+      threadname_get(name, sizeof(name));
       rdnstun(tunfds[0], v4_chains, v6_chains, &rdnstun_shutdown);
+      threadname_set(name);
       close(tunfds[0]);
     } else {
       thrd_t threads[nthread];

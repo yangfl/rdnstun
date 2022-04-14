@@ -41,7 +41,6 @@
 #define max(a, b) ((a) > (b) ? (a) : (b))
 #define min(a, b) ((a) < (b) ? (a) : (b))
 #define cmp(a, b) ((a) == (b) ? 0 : (a) < (b) ? -1 : 1)
-#define widecmp(a, b) cmp(!!(a), !!(b))
 
 #define arraysize(a) (sizeof(a) / sizeof(a[0]))
 
